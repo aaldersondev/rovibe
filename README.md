@@ -75,7 +75,7 @@ Un certificat s'achète auprès d'une autorité (Certum, Sectigo, DigiCert…) o
 
 1. Lance `RoVibe.exe`, puis « Installer le plugin Studio » et redémarre Roblox Studio.
 2. « Nouveau projet » : crée un dossier modèle, ou reprend un dossier qui contient déjà un `default.project.json`.
-3. Ouvre la place dans Studio, puis « Connecter Studio ». La première synchro demande une confirmation dans Studio.
+3. Ouvre la place dans Studio, puis « Connecter Studio ». La synchro s'applique sans confirmation ; pour en redemander une, change « Confirmation Behavior » dans les réglages du plugin.
 4. Lance des agents avec « + Claude Code » ou « + Codex ».
 
 `claude` et `codex` doivent être dans le PATH. Au premier lancement de Codex dans un projet, Codex demande d'approuver les hooks qu'RoVibe y a déposés (`.codex/hooks.json`) : c'est par eux qu'il transmet son état et respecte les verrous. L'app n'inclut aucun modèle : chaque agent utilise ton propre abonnement.

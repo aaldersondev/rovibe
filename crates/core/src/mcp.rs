@@ -2,7 +2,7 @@
 //! with plain JSON; Studio is reached through the already-open WebSocket, so
 //! a call costs one local round trip and no polling.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     extract::{Path, State},
@@ -362,11 +362,15 @@ fn get_console(state: &Shared, project: Option<&Project>, args: &Value) -> Strin
 
 fn studio_status(state: &Shared, project: Option<&Project>) -> String {
     let mut text = String::new();
-    let studios = state.studios.lock().unwrap();
+    // Copied out and released at once: looking for a dialog asks Windows
+    // about other programs' windows, and the sync state below has a lock of
+    // its own. Holding this one across either is how two requests end up
+    // waiting on each other for good.
+    let studios: Vec<Arc<studio::Studio>> = state.studios.lock().unwrap().values().cloned().collect();
     if studios.is_empty() {
         text.push_str("Aucun Studio connecté.\n");
     }
-    for studio in studios.values() {
+    for studio in &studios {
         text.push_str(&format!(
             "Studio « {} » placeId={} contexte={}\n",
             studio.name, studio.place_id, studio.context
@@ -420,7 +424,7 @@ pub async fn connect_sync(state: &Shared, project: &Project) -> Result<String, S
         )
         .await?;
     Ok(format!(
-        "Studio se connecte à la synchro sur le port {port}. La première synchro demande une confirmation dans Studio."
+        "Studio se connecte à la synchro sur le port {port}. Les fichiers du projet s'appliquent à la place sans confirmation."
     ))
 }
 
@@ -1076,4 +1080,49 @@ async fn serve(
     };
 
     Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+
+    /// The UI's refresh and an agent's studio_status read the same things.
+    /// Each once took two locks in the opposite order, and the server froze
+    /// the day both ran at the same instant.
+    #[test]
+    fn a_refresh_and_a_status_call_never_wait_on_each_other() {
+        let state: Shared = Arc::new(AppState::new(0, "t".into(), std::env::temp_dir(), "0".into()));
+        let (done, finished) = std::sync::mpsc::channel();
+
+        let refreshing = state.clone();
+        let refresh_done = done.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            for _ in 0..150 {
+                let _ = runtime.block_on(crate::api::get_state(axum::extract::State(refreshing.clone())));
+            }
+            let _ = refresh_done.send(());
+        });
+        std::thread::spawn(move || {
+            let project = Project {
+                id: "p".into(),
+                name: "Jeu".into(),
+                path: std::env::temp_dir(),
+                sync_port: 1,
+                place_id: None,
+                place_name: None,
+            };
+            for _ in 0..150 {
+                studio_status(&state, Some(&project));
+            }
+            let _ = done.send(());
+        });
+
+        for _ in 0..2 {
+            finished
+                .recv_timeout(Duration::from_secs(60))
+                .expect("les deux lectures se sont bloquées l'une l'autre");
+        }
+    }
 }

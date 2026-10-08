@@ -9,6 +9,10 @@ local Packages = Rojo.Packages
 local Log = require(Packages.Log)
 local Roact = require(Packages.Roact)
 
+-- Our own keys: Studio keeps plugin settings per key, and an upstream Rojo
+-- plugin installed next to this one must not share its choices with it.
+local SETTINGS_PREFIX = "RoVibe_"
+
 local defaultSettings = {
 	openScriptsExternally = false,
 	twoWaySync = false,
@@ -20,7 +24,9 @@ local defaultSettings = {
 	checkForUpdates = true,
 	checkForPrereleases = false,
 	autoConnectPlaytestServer = false,
-	confirmationBehavior = "Initial" :: "Never" | "Initial" | "Large Changes" | "Unlisted PlaceId",
+	-- Agents edit files all day: asking before each first sync would stop
+	-- them every time Studio connects. The app keeps a git history instead.
+	confirmationBehavior = "Never" :: "Never" | "Initial" | "Large Changes" | "Unlisted PlaceId",
 	largeChangesConfirmationThreshold = 5,
 	playSounds = true,
 	typecheckingEnabled = false,
@@ -37,11 +43,11 @@ Settings._bindings = {}
 
 if plugin then
 	for name, defaultValue in pairs(Settings._values) do
-		local savedValue = plugin:GetSetting("Rojo_" .. name)
+		local savedValue = plugin:GetSetting(SETTINGS_PREFIX .. name)
 
 		if savedValue == nil then
 			-- plugin:SetSetting hits disc instead of memory, so it can be slow. Spawn so we don't hang.
-			task.spawn(plugin.SetSetting, plugin, "Rojo_" .. name, defaultValue)
+			task.spawn(plugin.SetSetting, plugin, SETTINGS_PREFIX .. name, defaultValue)
 			Settings._values[name] = defaultValue
 		else
 			Settings._values[name] = savedValue
@@ -66,7 +72,7 @@ function Settings:set(name, value)
 
 	if plugin then
 		-- plugin:SetSetting hits disc instead of memory, so it can be slow. Spawn so we don't hang.
-		task.spawn(plugin.SetSetting, plugin, "Rojo_" .. name, value)
+		task.spawn(plugin.SetSetting, plugin, SETTINGS_PREFIX .. name, value)
 	end
 
 	if self._updateListeners[name] then
