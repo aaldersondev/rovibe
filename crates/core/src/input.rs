@@ -24,8 +24,10 @@ mod win {
                 MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEINPUT,
             },
             WindowsAndMessaging::{
-                BringWindowToTop, EnumChildWindows, GetCursorPos, GetForegroundWindow,
-                GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, SetCursorPos,
+                BringWindowToTop, EnumChildWindows, EnumWindows, GetCursorPos, GetForegroundWindow,
+                GetWindowTextW,
+                GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetCursorPos,
+                ShowWindow, SW_RESTORE,
                 SetForegroundWindow, SetWindowPos, WindowFromPoint, HWND_NOTOPMOST, HWND_TOPMOST,
                 SWP_NOMOVE, SWP_NOSIZE,
             },
@@ -295,6 +297,42 @@ mod win {
         Ok(unsafe { IsWindowEnabled(studio) == 0 })
     }
 
+    struct DialogSearch {
+        process: u32,
+        main: HWND,
+        title: Option<String>,
+    }
+
+    unsafe extern "system" fn match_dialog(handle: HWND, param: LPARAM) -> i32 {
+        let search = &mut *(param as *mut DialogSearch);
+        if handle != search.main
+            && IsWindowVisible(handle) != 0
+            && IsWindowEnabled(handle) != 0
+            && process_of(handle) == search.process
+        {
+            let mut buffer = [0u16; 256];
+            let length = GetWindowTextW(handle, buffer.as_mut_ptr(), buffer.len() as i32);
+            search.title = Some(String::from_utf16_lossy(&buffer[..length.max(0) as usize]));
+            return 0;
+        }
+        1
+    }
+
+    /// The title of the dialog that blocks Studio, if one does. While it is
+    /// open Studio ignores keys and clicks, and some of its own commands
+    /// wait: the user has to answer it, the app can only say it is there.
+    pub fn blocking_dialog(place_name: &str) -> Option<String> {
+        let main = crate::screenshot::win::find(place_name).ok()?;
+        unsafe {
+            if IsWindowEnabled(main) != 0 {
+                return None;
+            }
+            let mut search = DialogSearch { process: process_of(main), main, title: None };
+            EnumWindows(Some(match_dialog), &mut search as *mut _ as LPARAM);
+            Some(search.title.unwrap_or_default())
+        }
+    }
+
     pub fn run(place_name: &str, viewport: (i32, i32), steps: &[Step]) -> Result<(), String> {
         let studio = crate::screenshot::win::find(place_name)?;
 
@@ -313,6 +351,12 @@ mod win {
         }
 
         unsafe {
+            // A minimized window has no layout: its 3D view can't be located,
+            // and it can't take the foreground either.
+            if IsIconic(studio) != 0 {
+                ShowWindow(studio, SW_RESTORE);
+                sleep(Duration::from_millis(700));
+            }
             let area = viewport_rect(studio, viewport)?;
             let previous = GetForegroundWindow();
             let mut cursor = POINT { x: 0, y: 0 };
@@ -334,11 +378,39 @@ mod win {
 #[cfg(windows)]
 pub(crate) use win::viewport_area;
 #[cfg(windows)]
-pub use win::{dialog_open, run};
+pub use win::{blocking_dialog, dialog_open, run};
 
 #[cfg(not(windows))]
 pub fn dialog_open(_place_name: &str) -> Result<bool, String> {
     Ok(false)
+}
+
+#[cfg(not(windows))]
+pub fn blocking_dialog(_place_name: &str) -> Option<String> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_dialog;
+
+    #[test]
+    fn an_untitled_studio_dialog_is_named_by_its_likeliest_cause() {
+        for title in ["", "RobloxStudio", "Roblox Studio"] {
+            assert!(describe_dialog(title).contains("Auto Recovery"), "{title}");
+        }
+        assert_eq!(describe_dialog("Publish Experience"), "la boîte de dialogue « Publish Experience »");
+    }
+}
+
+/// How to name that dialog to the user. Studio gives several of its dialogs
+/// no title of their own, the crash-recovery one among them.
+pub fn describe_dialog(title: &str) -> String {
+    if title.is_empty() || title == "RobloxStudio" || title == "Roblox Studio" {
+        "une boîte de dialogue (souvent « Auto Recovery », après une fermeture brutale de Studio)".to_owned()
+    } else {
+        format!("la boîte de dialogue « {title} »")
+    }
 }
 
 #[cfg(not(windows))]

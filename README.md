@@ -9,7 +9,9 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **Banque d'assets** : modèles enregistrés depuis Studio en `.rbxm`, chacun avec un aperçu photographié à l'enregistrement, dans `Documents\Essaim\Banque`, réutilisables d'un projet à l'autre, plus la recherche dans le Creator Store Roblox (assets gratuits). Les scripts d'un asset du Store sont désactivés à l'insertion.
 - **Coordination entre agents** : un fichier modifié par un agent lui est réservé 10 minutes ; un autre agent Claude Code qui tente de l'éditer est refusé avec le nom de celui qui le tient. Les agents peuvent aussi réserver à l'avance (`claim_files`) et voir qui fait quoi (`agents_status`).
 - **État des agents** : chaque panneau indique si l'agent travaille, attend une réponse ou a fini ; la barre des tâches clignote quand l'un d'eux attend.
-- **Sessions persistantes** : les sessions Claude Code ouvertes à la fermeture de l'app reprennent leur conversation au lancement suivant.
+- **Sessions persistantes** : les sessions Claude Code ouvertes à la fermeture de l'app sont proposées au lancement suivant ; « Reprendre » relance l'agent sur sa conversation.
+- **Journal** : `%APPDATA%\Essaim\essaim.log`, consultable depuis l'app, trace les sessions, la synchro, les connexions de Studio, les outils en erreur et les mises à jour.
+- **Studio bloqué** : une boîte de dialogue ouverte dans Studio (par exemple « Auto Recovery » après une fermeture brutale) est signalée dans l'app et par `studio_status`, et les tests ne sont pas lancés tant qu'elle est là.
 - **Consignes** : une consigne s'envoie à plusieurs agents à la fois ; les consignes fréquentes s'enregistrent dans le projet (`.essaim/consignes.json`).
 - **Import d'un jeu existant** : « Nouveau projet » peut partir des scripts de la place ouverte dans Studio. Seuls les scripts deviennent des fichiers ; la map et les interfaces restent dans la place et la synchro n'y touche pas.
 - **Historique** : chaque projet est un dépôt git. Un point de sauvegarde est créé avant toute session « Sans confirmations », et « Historique » permet de revenir à un état antérieur sans rien perdre.
@@ -17,7 +19,7 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **Jouer le test** : pendant un test Play, l'agent déplace le personnage (pathfinding) et envoie de vraies touches et de vrais clics, y compris sur un élément d'interface désigné par son chemin.
 - **Capture d'écran** : l'app photographie la vue 3D de Studio, même en arrière-plan, et peut d'abord cadrer une instance.
 - **Vérification du code** : `check_code` lance selene et luau-lsp (`scripts\get-tools.ps1` les installe dans `dist\Essaim\tools`). Après chaque fichier écrit par un agent Claude Code, les erreurs selene lui sont renvoyées aussitôt.
-- **Publication** : l'outil `publish` et le bouton « Publier » envoient à Studio son raccourci de publication (Alt+P). Un agent ne peut publier qu'après accord dans l'app.
+- **Publication** : l'outil `publish` et le bouton « Publier » envoient à Studio son raccourci de publication (Alt+P). Un agent ne peut publier qu'après accord dans l'app. La publication est ensuite confirmée en relisant la date de dernière version de la place chez Roblox.
 
 ## Construire
 

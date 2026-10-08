@@ -365,6 +365,7 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         .take_writer()
         .map_err(|error| error.to_string())?;
 
+    let (resumed, isolated, unconfirmed) = (launch.resume.is_some(), launch.isolated, launch.skip_permissions);
     let info = SessionInfo {
         id: session_id,
         project_id: project.id.clone(),
@@ -419,6 +420,7 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
     std::thread::spawn(move || {
         let _ = child.wait();
         waiting.exited.store(true, Ordering::Relaxed);
+        crate::log::info(format!("{} : session terminée", waiting.info.title));
         let _ = waiting
             .output
             .send(Bytes::from_static(b"\r\n\x1b[2m[session termin\xc3\xa9e]\x1b[0m\r\n"));
@@ -428,6 +430,14 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         notified.notify();
     });
 
+    crate::log::info(format!(
+        "{} : session lancée sur « {} »{}{}{}",
+        info.title,
+        project.name,
+        if resumed { ", reprise" } else { "" },
+        if isolated { ", isolée" } else { "" },
+        if unconfirmed { ", sans confirmations" } else { "" },
+    ));
     state
         .sessions
         .lock()

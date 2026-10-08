@@ -110,6 +110,7 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
         crate::jobs::adopt(process_id);
     }
     let log = Arc::new(Mutex::new(VecDeque::new()));
+    let output = log.clone();
     if let Some(stdout) = child.stdout.take() {
         collect(stdout, log.clone());
     }
@@ -127,13 +128,24 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
         },
     );
 
+    crate::log::info(format!("Synchro de « {} » démarrée sur le port {}", project.name, project.sync_port));
     let state = state.clone();
     let project_id = project.id.clone();
+    let name = project.name.clone();
     tokio::spawn(async move {
         tokio::select! {
-            _ = child.wait() => {}
+            status = child.wait() => {
+                // Nobody asked for this: its last words are the only clue.
+                let last: Vec<String> = output.lock().unwrap().iter().rev().take(5).rev().cloned().collect();
+                crate::log::warn(format!(
+                    "Synchro de « {name} » arrêtée toute seule ({}) : {}",
+                    status.map(|status| status.to_string()).unwrap_or_default(),
+                    last.join(" / ")
+                ));
+            }
             _ = stop.notified() => {
                 let _ = child.kill().await;
+                crate::log::info(format!("Synchro de « {name} » arrêtée"));
             }
         }
         state.syncs.lock().unwrap().remove(&project_id);

@@ -234,6 +234,46 @@ button:disabled {
   background: var(--coral);
 }
 
+.pill.alert {
+  border-color: var(--coral);
+  color: var(--coral);
+}
+
+.pane.dormant {
+  border-style: dashed;
+}
+
+.dormant-body {
+  place-self: center;
+  max-width: 40ch;
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.dormant-body .actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+dialog.wide {
+  width: min(900px, 94vw);
+}
+
+.log {
+  max-height: 56vh;
+  overflow: auto;
+  margin: 0 0 12px;
+  padding: 10px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .check {
   display: inline-flex;
   align-items: center;

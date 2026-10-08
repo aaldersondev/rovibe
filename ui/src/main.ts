@@ -37,6 +37,16 @@ interface Studio {
   place_id: number;
   name: string;
   context: string;
+  /** Names the dialog that blocks this Studio, when one is open. */
+  blocked?: string | null;
+}
+
+/** A session left open by the previous run, waiting to be resumed. */
+interface Dormant {
+  agent_id: string;
+  project_id: string;
+  title: string;
+  isolated: boolean;
 }
 
 interface State {
@@ -49,6 +59,7 @@ interface State {
   approvals: { id: number; project_id: string; requester: string; request: string }[];
   /** Version of an update waiting to be installed, if any. */
   update: string | null;
+  dormant: Dormant[];
   /** Whether the WSL distribution for isolated Claude Code sessions exists. */
   isolation: boolean;
   plugin_installed: boolean;
@@ -403,6 +414,22 @@ interface BankAsset {
   thumb: boolean;
 }
 
+async function openLogDialog() {
+  const log = await api<{ path: string | null; lines: string[] }>("/api/log");
+  const text = h("pre", { class: "log", tabindex: 0 }, log.lines.join("\n") || "Le journal est vide.");
+  dialog.replaceChildren(
+    h("h2", {}, "Journal"),
+    h("p", { class: "notice" }, "Ce que l'app a fait, du plus ancien au plus récent : sessions, synchro, connexions de Studio, outils en erreur, mises à jour."),
+    text,
+    h("p", { class: "notice" }, `Fichier : ${log.path ?? "indisponible"}`),
+    h("div", { class: "actions" }, h("button", { onclick: () => dialog.close() }, "Fermer")),
+  );
+  dialog.classList.add("wide");
+  dialog.addEventListener("close", () => dialog.classList.remove("wide"), { once: true });
+  dialog.showModal();
+  text.scrollTop = text.scrollHeight;
+}
+
 async function openBankDialog() {
   const bank = await api<{ dir: string; assets: BankAsset[] }>("/api/assets");
   const filter = h("input", { type: "search", placeholder: "Filtrer par nom ou tag", autocomplete: "off" });
@@ -689,7 +716,7 @@ function renderRequests(current: State) {
       ? h(
           "div",
           { class: "request update" },
-          h("span", {}, `Essaim ${current.update} est disponible. L'installer redémarre l'app ; les sessions Claude Code reprennent ensuite.`),
+          h("span", {}, `Essaim ${current.update} est disponible. L'installer redémarre l'app ; tes sessions Claude Code seront proposées à la reprise.`),
           h("button", { class: "primary", onclick: () => run(() => api("/api/update", "POST")) }, "Installer et redémarrer"),
         )
       : "",
@@ -733,6 +760,7 @@ function renderRail(current: State) {
         const live = current.sessions.filter((s) => s.project_id === project.id && !s.exited);
         const count = live.length;
         const waiting = live.filter((s) => s.status === "waiting").length;
+        const dormant = current.dormant.filter((s) => s.project_id === project.id).length;
         return h(
           "button",
           { class: "project", "aria-current": String(project.id === selected), onclick: () => select(project.id) },
@@ -744,11 +772,15 @@ function renderRail(current: State) {
               ? waiting === 1
                 ? "1 agent attend ta réponse"
                 : `${waiting} agents attendent ta réponse`
-              : count === 0
-                ? "Aucun agent"
-                : count === 1
-                  ? "1 agent actif"
-                  : `${count} agents actifs`,
+              : dormant > 0 && count === 0
+                ? dormant === 1
+                  ? "1 session à reprendre"
+                  : `${dormant} sessions à reprendre`
+                : count === 0
+                  ? "Aucun agent"
+                  : count === 1
+                    ? "1 agent actif"
+                    : `${count} agents actifs`,
           ),
         );
       }),
@@ -769,6 +801,7 @@ function renderRail(current: State) {
           current.plugin_installed ? "Mettre à jour le plugin Studio" : "Installer le plugin Studio",
         ),
       h("button", { onclick: () => run(openBankDialog) }, "Banque d'assets"),
+      h("button", { class: "quiet", onclick: () => run(openLogDialog) }, "Journal"),
       h("button", { class: "primary", onclick: openProjectDialog }, "Nouveau projet"),
     ),
   );
@@ -783,10 +816,13 @@ function renderBar(current: State, project: Project) {
   const linked = edits.filter((studio) => !bound || isBoundTo(studio));
   const playing = current.studios.some((studio) => studio.context === "server");
 
+  const blocked = linked[0]?.blocked;
   const studioText =
     linked.length === 0
       ? "Studio non connecté"
-      : `${linked[0].name}${playing ? ", test en cours" : ""}${linked.length > 1 ? ` (+${linked.length - 1})` : ""}`;
+      : blocked
+        ? `${linked[0].name} : bloqué`
+        : `${linked[0].name}${playing ? ", test en cours" : ""}${linked.length > 1 ? ` (+${linked.length - 1})` : ""}`;
 
   const binding = h(
     "select",
@@ -818,7 +854,15 @@ function renderBar(current: State, project: Project) {
   bar.replaceChildren(
     h("h1", {}, project.name),
     h("span", { class: "path", title: project.path }, project.path),
-    h("span", { class: "pill" }, h("span", { class: linked.length ? "dot on" : "dot off" }), studioText),
+    h(
+      "span",
+      {
+        class: blocked ? "pill alert" : "pill",
+        title: blocked ? `Studio attend une réponse : ${blocked}. Tant qu'elle est ouverte, il ignore les touches, les clics et les tests.` : "",
+      },
+      h("span", { class: linked.length && !blocked ? "dot on" : "dot off" }),
+      studioText,
+    ),
     edits.length > 1 || bound ? binding : "",
     h(
       "button",
@@ -898,7 +942,42 @@ function renderPanes(current: State, project: Project | undefined) {
     }
   }
 
-  let visible = 0;
+  // Sessions of the previous run are offered, not restarted: each one starts
+  // an agent and reloads a conversation.
+  for (const card of grid.querySelectorAll(".dormant")) card.remove();
+  const waiting = current.dormant.filter((session) => session.project_id === project?.id);
+  for (const session of waiting) {
+    grid.append(
+      h(
+        "section",
+        { class: "pane dormant" },
+        h(
+          "header",
+          { class: "pane-head" },
+          h("span", { class: "cell" }),
+          h("span", { class: "title" }, session.title),
+          h("span", { class: "state" }, session.isolated ? "interrompue, isolée" : "interrompue"),
+        ),
+        h(
+          "div",
+          { class: "dormant-body" },
+          h("p", {}, "Cette session était ouverte à la dernière fermeture de l'app. La reprendre relance l'agent sur sa conversation."),
+          h(
+            "div",
+            { class: "actions" },
+            h(
+              "button",
+              { class: "primary", onclick: () => run(() => api(`/api/dormant/${session.agent_id}`, "POST")) },
+              "Reprendre",
+            ),
+            h("button", { onclick: () => run(() => api(`/api/dormant/${session.agent_id}`, "DELETE")) }, "Oublier"),
+          ),
+        ),
+      ),
+    );
+  }
+
+  let visible = waiting.length;
   for (const session of current.sessions) {
     let pane = panes.get(session.id);
     if (!pane) {

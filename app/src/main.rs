@@ -16,14 +16,23 @@ async fn watch_updates(app: tauri::AppHandle, server: essaim_core::Handle) {
         builder = redirected;
     }
     let Ok(updater) = builder.build() else { return };
-    let Ok(Some(update)) = updater.check().await else { return };
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => return,
+        Err(error) => {
+            essaim_core::log::warn(format!("Recherche de mise à jour impossible : {error}"));
+            return;
+        }
+    };
 
+    essaim_core::log::info(format!("Mise à jour {} disponible", update.version));
     server.announce_update(&update.version);
     if server.install_requests().recv().await.is_err() {
         return;
     }
-    if update.download_and_install(|_, _| {}, || {}).await.is_ok() {
-        app.restart();
+    match update.download_and_install(|_, _| {}, || {}).await {
+        Ok(()) => app.restart(),
+        Err(error) => essaim_core::log::warn(format!("Installation de la mise à jour {} : {error}", update.version)),
     }
 }
 

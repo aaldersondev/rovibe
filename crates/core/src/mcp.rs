@@ -358,6 +358,14 @@ fn studio_status(state: &Shared, project: Option<&Project>) -> String {
             "Studio « {} » placeId={} contexte={}\n",
             studio.name, studio.place_id, studio.context
         ));
+        if studio.context == "edit" {
+            if let Some(title) = input::blocking_dialog(&studio.name) {
+                text.push_str(&format!(
+                    "  bloqué par {} : l'utilisateur doit y répondre dans Studio\n",
+                    input::describe_dialog(&title)
+                ));
+            }
+        }
     }
 
     if let Some(project) = project {
@@ -557,6 +565,9 @@ pub async fn publish(state: &Shared, project: &Project) -> Result<String, String
     );
     let place = studio.name.clone();
     let place_id = info["placeId"].as_u64().unwrap_or(0);
+    // Roblox's own record of the place, read before and after: the only
+    // proof of a publication that doesn't depend on reading Studio's screen.
+    let before = place_updated(place_id).await;
 
     let dialog = tokio::task::spawn_blocking(move || {
         let shortcut = [input::Step::Keys { keys: vec!["alt".into(), "p".into()], hold_ms: 80 }];
@@ -567,12 +578,56 @@ pub async fn publish(state: &Shared, project: &Project) -> Result<String, String
     .await
     .map_err(|error| error.to_string())??;
 
+    let confirmed = if place_id != 0 && !dialog && before.is_some() {
+        let mut seen = None;
+        for _ in 0..15 {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let now = place_updated(place_id).await;
+            if now.is_some() && now != before {
+                seen = now;
+                break;
+            }
+        }
+        Some(seen)
+    } else {
+        None
+    };
+    crate::log::info(format!(
+        "Publication de « {} » (place {place_id}) demandée : dialogue={dialog}, confirmation={confirmed:?}",
+        project.name
+    ));
+
     Ok(match (place_id, dialog) {
+        (id, false) if matches!(confirmed, Some(Some(_))) => format!(
+            "Place {id} publiée : Roblox a enregistré la nouvelle version à {} (UTC).",
+            confirmed.flatten().unwrap_or_default()
+        ),
+        (id, false) if matches!(confirmed, Some(None)) => format!(
+            "Raccourci de publication envoyé pour la place {id}, mais Roblox n'a enregistré aucune nouvelle version en 45 s. Vérifie dans Studio : la publication a pu échouer ou attendre une réponse."
+        ),
         (0, true) => "Cette place n'a jamais été publiée : Studio a ouvert sa fenêtre de publication, à terminer à la main (nom du jeu, créateur).".to_owned(),
         (0, false) => "Raccourci de publication envoyé, mais Studio n'a pas ouvert sa fenêtre de publication : publie cette place une première fois par Fichier > Publier sur Roblox.".to_owned(),
         (_, true) => "Raccourci de publication envoyé : Studio a ouvert une fenêtre qui attend une réponse, regarde-la.".to_owned(),
         (id, false) => format!("Publication de la place {id} lancée par le raccourci de Studio. Studio indique le résultat dans ses notifications ; l'app ne peut pas le lire."),
     })
+}
+
+/// When Roblox last recorded a new version of a place. A public figure, so
+/// no key or login is involved.
+async fn place_updated(place_id: u64) -> Option<String> {
+    if place_id == 0 {
+        return None;
+    }
+    let details: Value = reqwest::Client::new()
+        .get(format!("https://economy.roblox.com/v2/assets/{place_id}/details"))
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    details["Updated"].as_str().map(str::to_owned)
 }
 
 /// The `publish` tool: nothing happens until the user accepts in the app.
@@ -745,6 +800,16 @@ async fn call_tool(
             // Only the server DataModel is allowed to end a running test.
             let context = if stopping { "server" } else { "edit" };
             let studio = studio::pick(state, project, context)?;
+            if !stopping {
+                // Studio queues the test behind an open dialog and the tool
+                // would then wait for DataModels that never come.
+                if let Some(title) = input::blocking_dialog(&studio.name) {
+                    return Err(format!(
+                        "Studio est bloqué par {} : l'utilisateur doit y répondre avant de lancer un test.",
+                        input::describe_dialog(&title)
+                    ));
+                }
+            }
             let reply = studio
                 .call("playtest", args.clone(), Duration::from_secs(15))
                 .await
@@ -879,7 +944,10 @@ async fn serve(
             };
             match outcome {
                 Ok(content) => json!({ "content": content, "isError": false }),
-                Err(text) => json!({ "content": [{ "type": "text", "text": text }], "isError": true }),
+                Err(text) => {
+                    crate::log::warn(format!("Outil {name} : {text}"));
+                    json!({ "content": [{ "type": "text", "text": text }], "isError": true })
+                }
             }
         }
         _ => {
