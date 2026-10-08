@@ -1,7 +1,13 @@
-//! Real keyboard and mouse input for a running playtest. Roblox lets a plugin
-//! neither synthesize input nor click a GUI, and ignores window messages
-//! posted to an unfocused Studio, so the only way to press a key in the game
-//! is the way a person does: bring Studio forward and send OS-level input.
+//! Keyboard and mouse input for a running playtest. Roblox lets a plugin
+//! neither synthesize input nor click a GUI, so it comes from outside.
+//!
+//! The game reads the messages of one window, the 3D view, whether or not
+//! Studio is in front: keys and clicks posted to that window reach the game
+//! while the user keeps the foreground, the keyboard and the mouse. Posted to
+//! Studio's main window they are lost, which long made this look impossible.
+//!
+//! Studio's own shortcuts (publishing) are another matter: those go through
+//! the foreground, the way a person presses them.
 
 pub enum Step {
     Keys { keys: Vec<String>, hold_ms: u64 },
@@ -26,8 +32,9 @@ mod win {
             WindowsAndMessaging::{
                 BringWindowToTop, EnumChildWindows, EnumWindows, GetCursorPos, GetForegroundWindow,
                 GetWindowTextW,
-                GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetCursorPos,
-                ShowWindow, SW_RESTORE,
+                GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
+                SetCursorPos, ShowWindow, SW_RESTORE, SW_SHOWNOACTIVATE, WM_KEYDOWN, WM_KEYUP,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SYSKEYDOWN, WM_SYSKEYUP,
                 SetForegroundWindow, SetWindowPos, WindowFromPoint, HWND_NOTOPMOST, HWND_TOPMOST,
                 SWP_NOMOVE, SWP_NOSIZE,
             },
@@ -79,6 +86,147 @@ mod win {
         Ok(code)
     }
 
+    /// The virtual-key code that goes with `scancode` on a US keyboard. A
+    /// posted key message carries both, and they have to agree.
+    fn virtual_key(name: &str) -> Result<u16, String> {
+        let lower = name.trim().to_lowercase();
+        Ok(match lower.as_str() {
+            "space" => 0x20,
+            "enter" | "return" => 0x0D,
+            "tab" => 0x09,
+            "escape" | "esc" => 0x1B,
+            "backspace" => 0x08,
+            "shift" => 0x10,
+            "ctrl" | "control" => 0x11,
+            "alt" => VK_ALT,
+            "left" => 0x25,
+            "up" => 0x26,
+            "right" => 0x27,
+            "down" => 0x28,
+            _ => {
+                let mut chars = lower.chars();
+                match (chars.next(), chars.as_str()) {
+                    (Some(c @ ('a'..='z' | '0'..='9')), "") => c.to_ascii_uppercase() as u16,
+                    (Some('f'), digits) => match digits.parse::<u16>() {
+                        Ok(number @ 1..=12) => 0x6F + number,
+                        _ => return Err(format!("Touche inconnue : {name}")),
+                    },
+                    _ => return Err(format!("Touche inconnue : {name}")),
+                }
+            }
+        })
+    }
+
+    const VK_ALT: u16 = 0x12;
+
+    struct Key {
+        virtual_key: u16,
+        scan: u16,
+        extended: bool,
+    }
+
+    /// Posts one key transition to a window, as the keyboard driver words it:
+    /// repeat count, scancode, extended flag, and for a release the two bits
+    /// that say the key was down and is going up.
+    unsafe fn post_key(view: HWND, key: &Key, up: bool) {
+        let mut detail = 1u32 | (u32::from(key.scan) << 16);
+        if key.extended {
+            detail |= 1 << 24;
+        }
+        if up {
+            detail |= 0xC000_0000;
+        }
+        let alt = key.virtual_key == VK_ALT;
+        if alt && !up {
+            detail |= 1 << 29;
+        }
+        let message = match (alt, up) {
+            (false, false) => WM_KEYDOWN,
+            (false, true) => WM_KEYUP,
+            (true, false) => WM_SYSKEYDOWN,
+            (true, true) => WM_SYSKEYUP,
+        };
+        PostMessageW(view, message, key.virtual_key as usize, detail as isize);
+    }
+
+    unsafe fn post_mouse(view: HWND, message: u32, buttons: usize, x: i32, y: i32) {
+        let position = ((y as u32 & 0xFFFF) << 16) | (x as u32 & 0xFFFF);
+        PostMessageW(view, message, buttons, position as isize);
+    }
+
+    /// Plays the steps in the game without Studio coming forward.
+    unsafe fn play_behind(view: HWND, size: (i32, i32), steps: &[Step], resolved: &[Vec<Key>]) -> Result<(), String> {
+        const LEFT_BUTTON: usize = 1;
+
+        for (step, keys) in steps.iter().zip(resolved) {
+            match step {
+                Step::Keys { hold_ms, .. } => {
+                    for key in keys {
+                        post_key(view, key, false);
+                    }
+                    sleep(Duration::from_millis(*hold_ms));
+                    for key in keys.iter().rev() {
+                        post_key(view, key, true);
+                    }
+                }
+                Step::Click { x, y } => {
+                    if !(0..size.0).contains(x) || !(0..size.1).contains(y) {
+                        return Err(format!("Le point ({x}, {y}) est hors du viewport ({} x {}) : clic annulé", size.0, size.1));
+                    }
+                    // Roblox only registers a hover after a move, and a
+                    // button only activates if it was hovered for a few
+                    // frames before the press.
+                    post_mouse(view, WM_MOUSEMOVE, 0, (*x - 2).max(0), *y);
+                    sleep(Duration::from_millis(40));
+                    post_mouse(view, WM_MOUSEMOVE, 0, *x, *y);
+                    sleep(Duration::from_millis(150));
+                    post_mouse(view, WM_LBUTTONDOWN, LEFT_BUTTON, *x, *y);
+                    sleep(Duration::from_millis(90));
+                    post_mouse(view, WM_LBUTTONUP, 0, *x, *y);
+                }
+                Step::Wait(ms) => sleep(Duration::from_millis(*ms)),
+            }
+            sleep(Duration::from_millis(60));
+        }
+        Ok(())
+    }
+
+    /// Sends the steps to the game of a running test. Studio stays where it
+    /// is, in front or behind, and neither the user's keyboard nor their
+    /// mouse is touched.
+    pub fn run_in_game(place_name: &str, viewport: (i32, i32), steps: &[Step]) -> Result<(), String> {
+        let studio = crate::screenshot::win::find(place_name)?;
+
+        // Resolved up front so that a typo can't leave a key held down.
+        let mut resolved = Vec::new();
+        for step in steps {
+            let mut keys = Vec::new();
+            if let Step::Keys { keys: names, .. } = step {
+                for name in names {
+                    let (scan, extended) = scancode(name)?;
+                    keys.push(Key { virtual_key: virtual_key(name)?, scan, extended });
+                }
+            }
+            resolved.push(keys);
+        }
+
+        unsafe {
+            // A modal dialog disables the main window: Studio would swallow
+            // every key and click, and the sequence would "succeed" for nothing.
+            if IsWindowEnabled(studio) == 0 {
+                return Err("Une boîte de dialogue est ouverte dans Roblox Studio et bloque les entrées : ferme-la d'abord".into());
+            }
+            // A minimized window has no layout, hence no 3D view to find. It
+            // comes back without taking the focus.
+            if IsIconic(studio) != 0 {
+                ShowWindow(studio, SW_SHOWNOACTIVATE);
+                sleep(Duration::from_millis(700));
+            }
+            let (view, _) = viewport_window(studio, viewport)?;
+            play_behind(view, viewport, steps, &resolved)
+        }
+    }
+
     unsafe fn send_key(code: u16, extended: bool, up: bool) {
         let mut input: INPUT = std::mem::zeroed();
         input.r#type = INPUT_KEYBOARD;
@@ -117,7 +265,7 @@ mod win {
 
     struct Search {
         size: (i32, i32),
-        found: Option<RECT>,
+        found: Option<(HWND, RECT)>,
     }
 
     unsafe extern "system" fn match_viewport(handle: HWND, param: LPARAM) -> i32 {
@@ -126,7 +274,10 @@ mod win {
         if IsWindowVisible(handle) != 0 && GetWindowRect(handle, &mut rect) != 0 {
             let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
             if (width - search.size.0).abs() <= 2 && (height - search.size.1).abs() <= 2 {
-                search.found = Some(rect);
+                // Several nested windows have that size; children come
+                // after their parents, so the last one is the innermost,
+                // the one the game listens to.
+                search.found = Some((handle, rect));
             }
         }
         1
@@ -134,12 +285,16 @@ mod win {
 
     /// The 3D view is the child window whose size equals the camera's
     /// viewport; nothing else in Studio exposes where it sits on screen.
-    unsafe fn viewport_rect(studio: HWND, size: (i32, i32)) -> Result<RECT, String> {
+    unsafe fn viewport_window(studio: HWND, size: (i32, i32)) -> Result<(HWND, RECT), String> {
         let mut search = Search { size, found: None };
         EnumChildWindows(studio, Some(match_viewport), &mut search as *mut _ as LPARAM);
         search
             .found
             .ok_or_else(|| "Viewport de jeu introuvable dans la fenêtre Studio".to_owned())
+    }
+
+    unsafe fn viewport_rect(studio: HWND, size: (i32, i32)) -> Result<RECT, String> {
+        viewport_window(studio, size).map(|(_, rect)| rect)
     }
 
     unsafe fn process_of(window: HWND) -> u32 {
@@ -250,7 +405,23 @@ mod win {
 
     #[cfg(test)]
     mod tests {
-        use super::scancode;
+        use super::{scancode, virtual_key};
+
+        #[test]
+        fn every_named_key_has_both_of_its_codes() {
+            assert_eq!(virtual_key("w"), Ok(0x57));
+            assert_eq!(virtual_key("5"), Ok(0x35));
+            assert_eq!(virtual_key("Space"), Ok(0x20));
+            assert_eq!(virtual_key("F1"), Ok(0x70));
+            assert_eq!(virtual_key("f12"), Ok(0x7B));
+            assert_eq!(virtual_key("Left"), Ok(0x25));
+            for name in ["a", "z", "0", "9", "space", "enter", "tab", "escape", "backspace", "shift", "ctrl", "alt", "left", "up", "right", "down", "f1", "f10", "f11", "f12"] {
+                assert!(scancode(name).is_ok() && virtual_key(name).is_ok(), "{name}");
+            }
+            for name in ["Banane", "", "F13", "F0", "é", "ab"] {
+                assert!(virtual_key(name).is_err(), "{name}");
+            }
+        }
 
         #[test]
         fn keys_are_named_by_their_position_on_a_us_keyboard() {
@@ -386,7 +557,7 @@ mod win {
 #[cfg(windows)]
 pub(crate) use win::viewport_area;
 #[cfg(windows)]
-pub use win::{blocking_dialog, check_keys, dialog_open, run};
+pub use win::{blocking_dialog, check_keys, dialog_open, run, run_in_game};
 
 #[cfg(not(windows))]
 pub fn check_keys(_keys: &[String]) -> Result<(), String> {
@@ -424,6 +595,11 @@ pub fn describe_dialog(title: &str) -> String {
     } else {
         format!("la boîte de dialogue « {title} »")
     }
+}
+
+#[cfg(not(windows))]
+pub fn run_in_game(_place_name: &str, _viewport: (i32, i32), _steps: &[Step]) -> Result<(), String> {
+    Err("Les entrées clavier et souris ne sont disponibles que sous Windows".into())
 }
 
 #[cfg(not(windows))]

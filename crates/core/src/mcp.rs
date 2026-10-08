@@ -169,7 +169,7 @@ fn tools() -> Value {
         },
         {
             "name": "play_input",
-            "description": "Pendant un test Play, envoie de vraies entrées clavier et souris au jeu : touches, clics dans le viewport, clics sur un élément d'interface. Met Roblox Studio au premier plan le temps de la séquence puis rend la main à la fenêtre précédente : l'utilisateur ne doit pas taper au clavier pendant ce temps.",
+            "description": "Pendant un test Play, envoie des entrées clavier et souris au jeu : touches, clics dans le viewport, clics sur un élément d'interface. Tout se passe en arrière-plan : Studio ne vient pas au premier plan, et ni le clavier ni la souris de l'utilisateur ne sont utilisés.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -896,7 +896,7 @@ async fn play_input(state: &Shared, project: Option<&Project>, args: &Value) -> 
         .unwrap_or_default();
     let count = steps.len();
 
-    tokio::task::spawn_blocking(move || input::run(&place, size, &steps))
+    tokio::task::spawn_blocking(move || input::run_in_game(&place, size, &steps))
         .await
         .map_err(|error| error.to_string())??;
     Ok(format!("{count} étape(s) jouée(s) dans le jeu."))
