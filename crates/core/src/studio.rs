@@ -182,6 +182,11 @@ async fn serve(state: Shared, hello: Hello, socket: WebSocket) {
         let loaded = loading
             .call("__load", json!({ "source": METHODS }), Duration::from_secs(20))
             .await;
+        if let Err(error) = &loaded {
+            crate::log::warn(format!("Studio « {} » ({}) : outils non chargés, {error}", loading.name, loading.context));
+        } else {
+            crate::log::info(format!("Studio « {} » connecté ({})", loading.name, loading.context));
+        }
         if let Err(error) = loaded {
             registry.logs.lock().unwrap().push(
                 "error".into(),
@@ -247,6 +252,7 @@ async fn serve(state: Shared, hello: Hello, socket: WebSocket) {
         let mut studios = state.studios.lock().unwrap();
         studio.closed.store(true, Ordering::Relaxed);
         studios.remove(&studio.id);
+        crate::log::info(format!("Studio « {} » déconnecté ({})", studio.name, studio.context));
     }
     // Dropping the senders wakes every caller still waiting on this Studio.
     studio.pending.lock().unwrap().clear();

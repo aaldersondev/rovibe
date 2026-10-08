@@ -7,6 +7,7 @@ mod assets;
 mod git;
 mod import;
 mod lint;
+pub mod log;
 mod input;
 mod isolation;
 mod jobs;
@@ -181,6 +182,11 @@ fn router(state: Shared) -> Router {
         .route("/api/assets/{id}/thumb", get(api::asset_thumb))
         .route("/api/approvals/{id}", post(api::answer_approval))
         .route("/api/update", post(api::install_update))
+        .route("/api/log", get(api::read_log))
+        .route(
+            "/api/dormant/{agent}",
+            post(api::resume_session).delete(api::forget_session),
+        )
         .route("/api/projects/{id}/publish", post(api::publish_project))
         .route("/ws/events", get(api::events_ws))
         .route("/ws/pty/{id}", get(api::pty_ws))
@@ -201,9 +207,13 @@ fn router(state: Shared) -> Router {
 /// which usually means another Essaim is already running.
 pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
     let data_dir = data_dir()?;
+    log::init(&data_dir);
+    log::info(format!("Essaim {version} démarre, port {port}, réglages dans {}", data_dir.display()));
 
     let token = load_token(&data_dir)?;
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .inspect_err(|error| log::warn(format!("Port {port} indisponible : {error}")))?;
     let state: Shared = Arc::new(AppState::new(port, token, data_dir, version.to_owned()));
 
     let projects = state.projects.lock().unwrap().clone();
@@ -217,8 +227,7 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
         let _ = axum::serve(listener, app).await;
     });
 
-    // Once the server answers: a resumed agent calls back as soon as it starts.
-    agents::restore_sessions(&state).await;
+    agents::load_dormant(&state);
 
     Ok(Handle {
         state,

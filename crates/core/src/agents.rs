@@ -324,6 +324,11 @@ pub async fn hook(
             }) {
                 if let Some((other, note)) = holder(&state, &project.id, &session_id, &path) {
                     let reason = if note.is_empty() { String::new() } else { format!(" ({note})") };
+                    crate::log::info(format!(
+                        "{} : modification de {path} refusée, tenu par {}",
+                        session.info.title,
+                        title_of(&state, &other)
+                    ));
                     verdict = Json(json!({
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
@@ -389,22 +394,24 @@ pub async fn hook(
     verdict
 }
 
-#[derive(Serialize, Deserialize)]
-struct Saved {
-    project_id: String,
-    title: String,
-    agent_id: String,
-    used: bool,
-    skip_permissions: bool,
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Saved {
+    pub project_id: String,
+    pub title: String,
+    pub agent_id: String,
+    pub used: bool,
+    pub skip_permissions: bool,
     #[serde(default)]
-    isolated: bool,
+    pub isolated: bool,
 }
 
 /// Records the agents that are running, so that the next start of the app
-/// can bring them back. A session the user closed is no longer in the map,
-/// and one that ended on its own is skipped: neither comes back.
+/// can offer them back. A session the user closed is no longer in the map,
+/// and one that ended on its own is skipped: neither comes back. Sessions
+/// still waiting to be resumed are kept as they are.
 pub fn save_sessions(state: &Shared) {
-    let saved: Vec<Saved> = state
+    let mut saved: Vec<Saved> = state.dormant.lock().unwrap().clone();
+    let running: Vec<Saved> = state
         .sessions
         .lock()
         .unwrap()
@@ -422,13 +429,17 @@ pub fn save_sessions(state: &Shared) {
             })
         })
         .collect();
+    saved.extend(running);
 
     if let Ok(json) = serde_json::to_vec_pretty(&saved) {
         let _ = std::fs::write(state.data_dir.join("sessions.json"), json);
     }
 }
 
-pub async fn restore_sessions(state: &Shared) {
+/// Reads the sessions left open by the previous run. They are only listed:
+/// each one starts an agent and reloads its conversation, which is for the
+/// user to ask for, not for the app to do to them at launch.
+pub fn load_dormant(state: &Shared) {
     let mut saved: Vec<Saved> = std::fs::read(state.data_dir.join("sessions.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -442,35 +453,68 @@ pub async fn restore_sessions(state: &Shared) {
             .and_then(|digits| digits.parse::<u64>().ok())
             .unwrap_or(0)
     };
-    // Panes are laid out in creation order: restore in the order the user
-    // opened the sessions, which the file doesn't keep.
+    // Shown in the order the user opened them, which the file doesn't keep.
     saved.sort_by_key(number);
+    saved.retain(|session| state.project(&session.project_id).is_some());
 
-    // New sessions must not reuse the number of a restored one.
+    // New sessions must not reuse the number of one that may come back.
     let highest = saved.iter().map(number).max().unwrap_or(0);
     state.skip_ids_to(highest + 1);
+    if !saved.is_empty() {
+        crate::log::info(format!("{} session(s) de la fois précédente à reprendre", saved.len()));
+    }
+    *state.dormant.lock().unwrap() = saved;
+}
 
-    for session in saved {
-        let Some(project) = state.project(&session.project_id) else {
-            continue;
-        };
+/// Brings one of those sessions back, on its previous conversation.
+pub async fn resume(state: &Shared, agent_id: &str) -> Result<pty::SessionInfo, String> {
+    let session = {
+        let mut dormant = state.dormant.lock().unwrap();
+        let index = dormant
+            .iter()
+            .position(|session| session.agent_id == agent_id)
+            .ok_or("Cette session n'est plus en attente")?;
+        dormant.remove(index)
+    };
+
+    let attempt = async {
+        let project = state.project(&session.project_id).ok_or("Projet inconnu")?;
         // If the isolated environment can't be brought back, the session
         // stays closed: reopening it unconfined would betray its name.
-        if session.isolated && isolation::prepare(state, &project).await.is_err() {
-            continue;
+        if session.isolated {
+            isolation::prepare(state, &project).await?;
         }
         let launch = Launch {
             kind: Kind::Claude,
             skip_permissions: session.skip_permissions,
             isolated: session.isolated,
             in_wsl: session.isolated,
-            title: Some(session.title),
+            title: Some(session.title.clone()),
             // An agent that never got a prompt left no conversation to
             // resume; it simply starts again under the same name.
-            resume: session.used.then_some(session.agent_id),
+            resume: session.used.then(|| session.agent_id.clone()),
         };
-        let _ = pty::spawn(state, &project, launch);
+        pty::spawn(state, &project, launch)
+    };
+
+    let outcome: Result<pty::SessionInfo, String> = attempt.await;
+    if outcome.is_err() {
+        // Still there to try again once the cause is fixed.
+        state.dormant.lock().unwrap().push(session);
     }
+    save_sessions(state);
+    state.notify();
+    outcome
+}
+
+pub fn forget(state: &Shared, agent_id: &str) {
+    state
+        .dormant
+        .lock()
+        .unwrap()
+        .retain(|session| session.agent_id != agent_id);
+    save_sessions(state);
+    state.notify();
 }
 
 #[cfg(test)]
@@ -537,6 +581,35 @@ mod tests {
         assert!(overlaps("SRC/Shop", "src/shop"));
         assert!(!overlaps("src/shop", "src/shopping/List.luau"));
         assert!(!overlaps("src/a.luau", "src/b.luau"));
+    }
+
+    #[test]
+    fn sessions_of_the_previous_run_wait_to_be_resumed_or_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = serde_json::json!([
+            { "project_id": "p1", "title": "Claude Code #7", "agent_id": "b", "used": true, "skip_permissions": false },
+            { "project_id": "p1", "title": "Claude Code #3", "agent_id": "a", "used": true, "skip_permissions": true, "isolated": true },
+            { "project_id": "gone", "title": "Claude Code #9", "agent_id": "c", "used": true, "skip_permissions": false },
+        ]);
+        std::fs::write(dir.path().join("sessions.json"), saved.to_string()).unwrap();
+
+        let state: Shared = std::sync::Arc::new(crate::state::AppState::new(0, "t".into(), dir.path().to_path_buf(), "0".into()));
+        state.projects.lock().unwrap().push(project());
+        load_dormant(&state);
+
+        // Listed in the order they were opened; the one whose project is
+        // gone can't come back and is dropped.
+        let titles: Vec<String> = state.dormant.lock().unwrap().iter().map(|session| session.title.clone()).collect();
+        assert_eq!(titles, ["Claude Code #3", "Claude Code #7"]);
+        // Nothing was started.
+        assert!(state.sessions.lock().unwrap().is_empty());
+        // A new session takes a number above every one that may come back.
+        assert_eq!(state.next_id(), 8);
+
+        forget(&state, "a");
+        let kept: Vec<Saved> = serde_json::from_slice(&std::fs::read(dir.path().join("sessions.json")).unwrap()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].agent_id, "b");
     }
 
     #[test]

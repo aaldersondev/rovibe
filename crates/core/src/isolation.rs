@@ -205,6 +205,7 @@ pub async fn prepare(state: &Shared, project: &Project) -> Result<(), String> {
     let needed = !std::mem::replace(&mut *state.wsl_relay.lock().unwrap(), true);
     if needed {
         if let Err(error) = start_relay(state).await {
+            crate::log::warn(format!("Relais vers l'environnement isolé : {error}"));
             *state.wsl_relay.lock().unwrap() = false;
             return Err(format!("Le relais vers l'app n'a pas démarré : {error}"));
         }

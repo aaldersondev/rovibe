@@ -96,6 +96,9 @@ pub struct AppState {
     pub syncs: Mutex<HashMap<String, SyncProc>>,
     pub logs: Mutex<LogBuffer>,
     pub locks: Mutex<Vec<Lock>>,
+    /// Agent sessions that were open when the app last closed, waiting for
+    /// the user to resume or dismiss them.
+    pub dormant: Mutex<Vec<crate::agents::Saved>>,
     pub approvals: Mutex<HashMap<u64, Approval>>,
     /// Whether the relay serving agents inside WSL is running.
     pub wsl_relay: Mutex<bool>,
@@ -129,6 +132,7 @@ impl AppState {
             syncs: Mutex::default(),
             logs: Mutex::default(),
             locks: Mutex::default(),
+            dormant: Mutex::default(),
             approvals: Mutex::default(),
             wsl_relay: Mutex::default(),
             update: Mutex::default(),

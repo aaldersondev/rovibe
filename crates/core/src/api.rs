@@ -94,13 +94,22 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
             .unwrap_or(0)
     });
 
-    let studios: Vec<_> = state
+    let studios: Vec<Value> = state
         .studios
         .lock()
         .unwrap()
         .values()
-        .map(|studio| studio.info())
+        .map(|studio| {
+            let mut info = json!(studio.info());
+            // Only the editor's window can be told apart by its title.
+            if studio.context == "edit" {
+                info["blocked"] = json!(crate::input::blocking_dialog(&studio.name)
+                    .map(|title| crate::input::describe_dialog(&title)));
+            }
+            info
+        })
         .collect();
+    let dormant = state.dormant.lock().unwrap().clone();
 
     let approvals: Vec<Value> = state
         .approvals
@@ -121,6 +130,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
     Json(json!({
         "version": state.version,
         "approvals": approvals,
+        "dormant": dormant,
         "update": *state.update.lock().unwrap(),
         "isolation": isolation::available(),
         "checkers": { "selene": selene, "luau_lsp": luau_lsp },
@@ -167,6 +177,7 @@ pub async fn create_project(State(state): State<Shared>, Json(body): Json<NewPro
     let (project, report) =
         projects::create(&state, &body.name, body.path, export.as_ref()).map_err(fail)?;
 
+    crate::log::info(format!("Projet « {} » créé dans {}", project.name, project.path.display()));
     let mut notes = Vec::new();
     if let Some(report) = report {
         notes.push(format!("{} scripts importés depuis Studio.", report.scripts));
@@ -178,6 +189,7 @@ pub async fn create_project(State(state): State<Shared>, Json(body): Json<NewPro
         }
     }
     if let Err(error) = git::ensure_repo(&project.path).await {
+        crate::log::warn(format!("Historique git non créé pour « {} » : {error}", project.name));
         notes.push(format!("Historique git non créé : {error}"));
     }
 
@@ -251,6 +263,7 @@ pub async fn remove_project(State(state): State<Shared>, Path(id): Path<String>)
         .lock()
         .unwrap()
         .retain(|project| project.id != id);
+    state.dormant.lock().unwrap().retain(|session| session.project_id != id);
     agents::save_sessions(&state);
     state.save_projects().map_err(|error| fail(error.to_string()))?;
     state.notify();
@@ -428,6 +441,20 @@ pub async fn answer_approval(
         .ok_or_else(|| fail("Cette demande n'est plus en attente"))?;
     let _ = approval.answer.send(body.allow);
     state.notify();
+    Ok(Json(json!({})))
+}
+
+pub async fn read_log() -> Json<Value> {
+    Json(json!({ "path": crate::log::path(), "lines": crate::log::tail(300) }))
+}
+
+pub async fn resume_session(State(state): State<Shared>, Path(agent): Path<String>) -> ApiResult {
+    let info = agents::resume(&state, &agent).await.map_err(fail)?;
+    Ok(Json(json!(info)))
+}
+
+pub async fn forget_session(State(state): State<Shared>, Path(agent): Path<String>) -> ApiResult {
+    agents::forget(&state, &agent);
     Ok(Json(json!({})))
 }
 
