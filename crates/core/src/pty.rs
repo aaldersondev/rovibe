@@ -107,16 +107,32 @@ pub struct Session {
     /// nothing running behind it.
     family: crate::jobs::Family,
     scrollback: Mutex<Vec<u8>>,
+    /// Columns and rows the process currently draws for.
+    size: Mutex<(u16, u16)>,
     output: broadcast::Sender<Bytes>,
+}
+
+/// What a terminal that joins a session needs to show it as it is.
+pub struct Attached {
+    /// The size everything in `replay` was drawn for. Replayed at any other
+    /// width, an agent's interface comes out with its lines over one another.
+    pub size: (u16, u16),
+    pub replay: Bytes,
+    pub output: broadcast::Receiver<Bytes>,
 }
 
 impl Session {
     /// Returns everything printed so far together with a receiver for what
     /// comes next. Both are taken under the scrollback lock, which the reader
     /// thread also holds while publishing, so no byte is lost or duplicated.
-    pub fn attach(&self) -> (Bytes, broadcast::Receiver<Bytes>) {
+    pub fn attach(&self) -> Attached {
         let scrollback = self.scrollback.lock().unwrap();
-        (Bytes::copy_from_slice(&scrollback), self.output.subscribe())
+        let size = *self.size.lock().unwrap();
+        Attached {
+            size,
+            replay: Bytes::copy_from_slice(&scrollback),
+            output: self.output.subscribe(),
+        }
     }
 
     pub fn write(&self, data: &[u8]) {
@@ -126,12 +142,21 @@ impl Session {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.master.lock().unwrap().resize(PtySize {
-            rows: rows.max(2),
-            cols: cols.max(2),
+        let (cols, rows) = (cols.max(2), rows.max(2));
+        let mut size = self.size.lock().unwrap();
+        if *size == (cols, rows) {
+            return;
+        }
+        let resized = self.master.lock().unwrap().resize(PtySize {
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         });
+        if resized.is_ok() {
+            *size = (cols, rows);
+            *LAST_SIZE.lock().unwrap() = (cols, rows);
+        }
     }
 
     pub fn kill(&self) {
@@ -188,6 +213,11 @@ fn from_host_session(name: &str, started_by_agent: bool) -> bool {
             && name.starts_with("CLAUDE")
             && !KEPT_PREFIXES.iter().any(|kept| name.starts_with(kept)))
 }
+
+/// The size the last terminal to speak had: the best guess for the next
+/// session's, until its own terminal says. An agent resuming a conversation
+/// prints all of it at once, at whatever size it starts with.
+static LAST_SIZE: Mutex<(u16, u16)> = Mutex::new((120, 30));
 
 /// What tells a program it may use every color the terminal shows.
 const COLOR_ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
@@ -462,10 +492,11 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
 
     let command = build_command(state, project, &session_id, &launch, agent_id.as_deref())?;
 
+    let start_size = *LAST_SIZE.lock().unwrap();
     let pair = native_pty_system()
         .openpty(PtySize {
-            rows: 30,
-            cols: 120,
+            rows: start_size.1,
+            cols: start_size.0,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -522,6 +553,7 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         killer: Mutex::new(child.clone_killer()),
         family,
         scrollback: Mutex::new(Vec::new()),
+        size: Mutex::new(start_size),
         output: broadcast::channel(1024).0,
     });
 

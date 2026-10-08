@@ -739,10 +739,17 @@ pub async fn pty_ws(
 
     upgrade.on_upgrade(move |socket: WebSocket| async move {
         let (mut sink, mut stream) = socket.split();
-        let (scrollback, mut output) = session.attach();
+        let attached = session.attach();
+        let mut output = attached.output;
 
         let forward = tokio::spawn(async move {
-            if !scrollback.is_empty() && sink.send(Message::Binary(scrollback)).await.is_err() {
+            // The size first: the terminal takes it before it draws what
+            // follows, and only then goes to its own.
+            let greeting = json!({ "cols": attached.size.0, "rows": attached.size.1, "replay": attached.replay.len() });
+            if sink.send(Message::Text(greeting.to_string().into())).await.is_err() {
+                return;
+            }
+            if !attached.replay.is_empty() && sink.send(Message::Binary(attached.replay)).await.is_err() {
                 return;
             }
             loop {
