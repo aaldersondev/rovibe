@@ -70,11 +70,11 @@ pub fn replace_old_plugin(state: &Shared) {
 }
 
 pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
+    // One lock at a time, each released before the next: this handler runs
+    // on every refresh, next to agents asking for the same things.
+    let listed = state.projects.lock().unwrap().clone();
     let syncs = state.syncs.lock().unwrap();
-    let projects: Vec<Value> = state
-        .projects
-        .lock()
-        .unwrap()
+    let projects: Vec<Value> = listed
         .iter()
         .map(|project| {
             json!({
@@ -92,6 +92,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
             })
         })
         .collect();
+    drop(syncs);
 
     let mut sessions: Vec<Value> = state
         .sessions
@@ -130,11 +131,11 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
             .unwrap_or(0)
     });
 
-    let studios: Vec<Value> = state
-        .studios
-        .lock()
-        .unwrap()
-        .values()
+    // Same care as in the MCP's studio_status: no lock is held while another
+    // is taken, nor while Windows is asked about Studio's windows.
+    let connected: Vec<_> = state.studios.lock().unwrap().values().cloned().collect();
+    let studios: Vec<Value> = connected
+        .iter()
         .map(|studio| {
             let mut info = json!(studio.info());
             // Only the editor's window can be told apart by its title.
