@@ -6,11 +6,11 @@ use tauri_plugin_updater::UpdaterExt;
 /// Looks for a newer version once, tells the UI about it, and installs it
 /// when the user asks. Every failure is silent: an app that can't reach the
 /// update feed must simply keep working.
-async fn watch_updates(app: tauri::AppHandle, server: essaim_core::Handle) {
+async fn watch_updates(app: tauri::AppHandle, server: rovibe_core::Handle) {
     let mut builder = app.updater_builder();
     // Lets a build be pointed at another feed, e.g. a local one for testing.
     // Whatever it serves still has to carry the release signature.
-    if let Ok(feed) = std::env::var("ESSAIM_UPDATE_URL") {
+    if let Ok(feed) = std::env::var("ROVIBE_UPDATE_URL") {
         let Ok(feed) = feed.parse() else { return };
         let Ok(redirected) = builder.endpoints(vec![feed]) else { return };
         builder = redirected;
@@ -20,33 +20,33 @@ async fn watch_updates(app: tauri::AppHandle, server: essaim_core::Handle) {
         Ok(Some(update)) => update,
         Ok(None) => return,
         Err(error) => {
-            essaim_core::log::warn(format!("Recherche de mise à jour impossible : {error}"));
+            rovibe_core::log::warn(format!("Recherche de mise à jour impossible : {error}"));
             return;
         }
     };
 
-    essaim_core::log::info(format!("Mise à jour {} disponible", update.version));
+    rovibe_core::log::info(format!("Mise à jour {} disponible", update.version));
     server.announce_update(&update.version);
     if server.install_requests().recv().await.is_err() {
         return;
     }
     match update.download_and_install(|_, _| {}, || {}).await {
         Ok(()) => app.restart(),
-        Err(error) => essaim_core::log::warn(format!("Installation de la mise à jour {} : {error}", update.version)),
+        Err(error) => rovibe_core::log::warn(format!("Installation de la mise à jour {} : {error}", update.version)),
     }
 }
 
 fn main() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
 
-    // When the port is taken, an Essaim server is already running (a second
+    // When the port is taken, an RoVibe server is already running (a second
     // launch, or the headless server): this window simply attaches to it.
     let server = runtime
-        .block_on(essaim_core::start(essaim_core::DEFAULT_PORT, env!("CARGO_PKG_VERSION")))
+        .block_on(rovibe_core::start(rovibe_core::DEFAULT_PORT, env!("CARGO_PKG_VERSION")))
         .ok();
     let url = match &server {
         Some(server) => server.url.clone(),
-        None => format!("http://127.0.0.1:{}/", essaim_core::DEFAULT_PORT),
+        None => format!("http://127.0.0.1:{}/", rovibe_core::DEFAULT_PORT),
     };
     let tasks = runtime.handle().clone();
 
@@ -54,7 +54,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
-                .title("Essaim")
+                .title("RoVibe")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(720.0, 480.0)
                 .build()?;
@@ -76,5 +76,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("failed to run Essaim");
+        .expect("failed to run RoVibe");
 }

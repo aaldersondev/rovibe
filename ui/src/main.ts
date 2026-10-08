@@ -77,16 +77,16 @@ interface Pane {
   target: HTMLInputElement;
 }
 
-const token = document.querySelector<HTMLMetaElement>('meta[name="essaim-token"]')!.content;
+const token = document.querySelector<HTMLMetaElement>('meta[name="rovibe-token"]')!.content;
 const app = document.getElementById("app")!;
 const panes = new Map<string, Pane>();
 
 let state: State | null = null;
-let selected = localStorage.getItem("essaim.project");
-let skipPermissions = localStorage.getItem("essaim.skip") === "1";
-let isolated = localStorage.getItem("essaim.isolated") === "1";
+let selected = localStorage.getItem("rovibe.project");
+let skipPermissions = localStorage.getItem("rovibe.skip") === "1";
+let isolated = localStorage.getItem("rovibe.isolated") === "1";
 /** Model for the next Claude Code session; empty follows the settings. */
-let model = localStorage.getItem("essaim.model") ?? "";
+let model = localStorage.getItem("rovibe.model") ?? "";
 
 type Child = Node | string | null | false;
 
@@ -278,7 +278,7 @@ const dialog = h("dialog");
 
 function openProjectDialog() {
   const name = h("input", { name: "name", required: true, autocomplete: "off" });
-  const path = h("input", { name: "path", autocomplete: "off", placeholder: "Documents\\Essaim\\<nom>" });
+  const path = h("input", { name: "path", autocomplete: "off", placeholder: "Documents\\RoVibe\\<nom>" });
   const open = (state?.studios ?? []).filter((studio) => studio.context === "edit");
   const importStudio = h(
     "select",
@@ -347,7 +347,7 @@ async function openHistoryDialog(project: Project) {
   if (!history.enabled) {
     dialog.replaceChildren(
       h("h2", {}, "Historique"),
-      h("p", { class: "notice" }, "Ce projet n'a pas son propre dépôt git : Essaim ne gère pas son historique."),
+      h("p", { class: "notice" }, "Ce projet n'a pas son propre dépôt git : RoVibe ne gère pas son historique."),
       h("div", { class: "actions" }, h("button", { onclick: () => dialog.close() }, "Fermer")),
     );
     dialog.showModal();
@@ -566,7 +566,7 @@ async function openSettingsDialog() {
   const fields = {
     claude_model: field("claude_model", "Celui de Claude Code (ex. opus, sonnet, haiku)"),
     codex_model: field("codex_model", "Celui de Codex"),
-    projects_dir: field("projects_dir", "Documents\\Essaim"),
+    projects_dir: field("projects_dir", "Documents\\RoVibe"),
     publish_shortcut: field("publish_shortcut", "alt+p"),
     isolation_network: h(
       "select",
@@ -941,7 +941,7 @@ async function openBankDialog() {
 
 function select(id: string) {
   selected = id;
-  localStorage.setItem("essaim.project", id);
+  localStorage.setItem("rovibe.project", id);
   render();
 }
 
@@ -974,12 +974,12 @@ function announceChanges(current: State) {
       if (!document.hasFocus()) unseen += 1;
     }
   }
-  document.title = unseen > 0 ? `(${unseen}) Essaim` : "Essaim";
+  document.title = unseen > 0 ? `(${unseen}) RoVibe` : "RoVibe";
 }
 
 window.addEventListener("focus", () => {
   unseen = 0;
-  document.title = "Essaim";
+  document.title = "RoVibe";
 });
 
 interface Prompt {
@@ -1135,7 +1135,7 @@ function renderRequests(current: State) {
       ? h(
           "div",
           { class: "request update" },
-          h("span", {}, `Essaim ${current.update} est disponible. L'installer redémarre l'app ; tes sessions Claude Code seront proposées à la reprise.`),
+          h("span", {}, `RoVibe ${current.update} est disponible. L'installer redémarre l'app ; tes sessions Claude Code seront proposées à la reprise.`),
           h("button", { class: "primary", onclick: () => run(() => api("/api/update", "POST")) }, "Installer et redémarrer"),
         )
       : "",
@@ -1171,7 +1171,7 @@ function renderRail(current: State) {
     '<path fill="#f2b33d" d="M13 1l5 3v6l-5 3-5-3V4z"/><path fill="#5fd3a6" d="M6.5 12.5l5 3v6l-5 3-5-3v-6z"/><path fill="#a99cf5" d="M19.5 12.5l5 3v6l-5 3-5-3v-6z"/>';
 
   rail.replaceChildren(
-    h("div", { class: "brand" }, logo, "Essaim"),
+    h("div", { class: "brand", title: "Vibe Code Together in Roblox Studio." }, logo, "RoVibe"),
     h(
       "nav",
       { class: "projects", "aria-label": "Projets" },
@@ -1214,7 +1214,7 @@ function renderRail(current: State) {
         h(
           "button",
           {
-            title: "Copie EssaimSync.rbxm dans le dossier Plugins de Roblox Studio",
+            title: "Copie RoVibeStudio.rbxm dans le dossier Plugins de Roblox Studio",
             onclick: () => run(() => api("/api/plugin/install", "POST")),
           },
           current.plugin_installed ? "Mettre à jour le plugin Studio" : "Installer le plugin Studio",
@@ -1331,7 +1331,7 @@ function renderBar(current: State, project: Project) {
         checked: skipPermissions,
         onchange: (event: Event) => {
           skipPermissions = (event.target as HTMLInputElement).checked;
-          localStorage.setItem("essaim.skip", skipPermissions ? "1" : "0");
+          localStorage.setItem("rovibe.skip", skipPermissions ? "1" : "0");
         },
       }),
       "Sans confirmations",
@@ -1349,7 +1349,7 @@ function renderBar(current: State, project: Project) {
         checked: isolated,
         onchange: (event: Event) => {
           isolated = (event.target as HTMLInputElement).checked;
-          localStorage.setItem("essaim.isolated", isolated ? "1" : "0");
+          localStorage.setItem("rovibe.isolated", isolated ? "1" : "0");
         },
       }),
       "Isolé",
@@ -1360,7 +1360,7 @@ function renderBar(current: State, project: Project) {
         title: "Modèle de la prochaine session Claude Code",
         onchange: (event: Event) => {
           model = (event.target as HTMLSelectElement).value;
-          localStorage.setItem("essaim.model", model);
+          localStorage.setItem("rovibe.model", model);
         },
       },
       ...[
@@ -1449,7 +1449,8 @@ function renderPanes(current: State, project: Project | undefined) {
 
   if (!project) {
     empty.replaceChildren(
-      h("h2", {}, "Aucun projet"),
+      h("h2", {}, "Vibe Code Together in Roblox Studio."),
+      h("p", { class: "badges" }, h("span", {}, "Multi-Agent"), h("span", {}, "MCP"), h("span", {}, "Studio Sync")),
       h("p", {}, "Un projet est un dossier de code synchronisé avec une place Roblox Studio. Les agents y travaillent en parallèle."),
       h("div", { class: "actions" }, h("button", { class: "primary", onclick: openProjectDialog }, "Nouveau projet")),
     );

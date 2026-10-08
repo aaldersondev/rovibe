@@ -1,4 +1,4 @@
-"""Lets an agent inside the isolated distribution talk to the Essaim app,
+"""Lets an agent inside the isolated distribution talk to the RoVibe app,
 and to the few internet hosts it is allowed.
 
 The agent posts to 127.0.0.1 as it would on Windows. This process, started
@@ -96,7 +96,7 @@ def allowed(host):
 
 class Tunnel(socketserver.BaseRequestHandler):
     def refuse(self, host):
-        reason = f"Essaim : {host} n'est pas dans les hôtes autorisés en mode isolé.\n".encode()
+        reason = f"RoVibe : {host} n'est pas dans les hôtes autorisés en mode isolé.\n".encode()
         self.request.sendall(
             b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n"
             + f"Content-Length: {len(reason)}\r\nConnection: close\r\n\r\n".encode()

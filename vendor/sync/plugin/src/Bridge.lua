@@ -1,5 +1,5 @@
 --[[
-	Keeps a WebSocket open to the Essaim desktop app so that agents can drive
+	Keeps a WebSocket open to the RoVibe desktop app so that agents can drive
 	Studio (run code, read the tree, start a playtest) with one round trip per
 	call instead of the HTTP long-polling other bridges rely on.
 
@@ -62,7 +62,7 @@ local env = {
 -- the client.
 local function loadMethods(params)
 	local module = Instance.new("ModuleScript")
-	module.Name = "EssaimMethods"
+	module.Name = "RoVibeMethods"
 	module.Source = params.source
 
 	local build = require(module)
@@ -149,7 +149,7 @@ function Bridge.start(plugin)
 	end
 	running = true
 
-	local port = tonumber(plugin:GetSetting("EssaimBridgePort")) or DEFAULT_PORT
+	local port = tonumber(plugin:GetSetting("RoVibeBridgePort")) or DEFAULT_PORT
 
 	if RunService:IsRunning() then
 		-- Game scripts start before plugins do, so their first prints would
@@ -177,7 +177,7 @@ function Bridge.start(plugin)
 				local entries = pendingLogs
 				pendingLogs = {}
 				if droppedLogs > 0 then
-					table.insert(entries, { l = "warn", m = string.format("[essaim] %d log lines dropped", droppedLogs) })
+					table.insert(entries, { l = "warn", m = string.format("[rovibe] %d log lines dropped", droppedLogs) })
 					droppedLogs = 0
 				end
 				send({ event = "log", entries = entries })

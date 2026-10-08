@@ -34,14 +34,14 @@ impl SyncProc {
 /// Locates the sync server: next to the app once packaged, in the fork's
 /// build output during development.
 pub fn binary() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("ESSAIM_SYNC_BIN") {
+    if let Some(path) = std::env::var_os("ROVIBE_SYNC_BIN") {
         return Some(PathBuf::from(path));
     }
 
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let candidates = [
-        dir.join("essaim-sync.exe"),
+        dir.join("rovibe-sync.exe"),
         dir.join("../../vendor/sync/target/release/rojo.exe"),
     ];
     candidates.into_iter().find(|path| path.exists())
@@ -83,7 +83,7 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
         return Ok(running.port);
     }
 
-    let binary = binary().ok_or("Serveur de synchro introuvable (essaim-sync.exe)")?;
+    let binary = binary().ok_or("Serveur de synchro introuvable (rovibe-sync.exe)")?;
     if !port_is_free(project.sync_port) {
         return Err(format!(
             "Le port {} est déjà utilisé par un autre programme",

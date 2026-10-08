@@ -1,5 +1,5 @@
 --[[
-	The Studio side of every Essaim tool. The app sends this chunk to the
+	The Studio side of every RoVibe tool. The app sends this chunk to the
 	plugin each time it connects, so changing a tool only takes restarting the
 	app: Studio, and whatever is unsaved in it, stays open.
 
@@ -132,7 +132,7 @@ return function(env)
 		end
 
 		local fn
-		local available, loaded, compileError = pcall(loadstring, params.code, "=essaim")
+		local available, loaded, compileError = pcall(loadstring, params.code, "=rovibe")
 		if available then
 			if not loaded then
 				error("Compile error: " .. tostring(compileError), 0)
@@ -144,7 +144,7 @@ return function(env)
 			-- never exists on the client. A ModuleScript built on the fly runs the
 			-- same code everywhere; its parameters shadow the global print/warn.
 			local module = Instance.new("ModuleScript")
-			module.Name = "essaim"
+			module.Name = "rovibe"
 			module.Source = "return function(print, warn)\n" .. params.code .. "\nend"
 			local ok, body = pcall(require, module)
 			module:Destroy()
@@ -158,7 +158,7 @@ return function(env)
 
 		local recording = nil
 		if RunService:IsEdit() then
-			local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "Essaim: run_luau")
+			local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "RoVibe: run_luau")
 			recording = if ok then id else nil
 		end
 
@@ -168,7 +168,7 @@ return function(env)
 				-- Frames from this module are noise to whoever wrote the snippet.
 				local lines = {}
 				for _, line in string.split(debug.traceback(tostring(message), 2), "\n") do
-					if line ~= "" and not string.find(line, "EssaimMethods", 1, true) then
+					if line ~= "" and not string.find(line, "RoVibeMethods", 1, true) then
 						table.insert(lines, line)
 					end
 				end
@@ -414,7 +414,7 @@ return function(env)
 
 		local recording = nil
 		if RunService:IsEdit() then
-			local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "Essaim: asset_insert")
+			local ok, id = pcall(ChangeHistoryService.TryBeginRecording, ChangeHistoryService, "RoVibe: asset_insert")
 			recording = if ok then id else nil
 		end
 
@@ -596,7 +596,7 @@ return function(env)
 		}
 	end
 
-	local STAGED = "EssaimApercu"
+	local STAGED = "RoVibeApercu"
 
 	local function clearStage()
 		local previous = workspace:FindFirstChild(STAGED)

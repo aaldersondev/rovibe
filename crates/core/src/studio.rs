@@ -115,7 +115,7 @@ pub fn pick(state: &Shared, project: Option<&Project>, context: &str) -> Result<
     match candidates.len() {
         1 => Ok(candidates.remove(0).clone()),
         0 if studios.is_empty() => Err(
-            "Aucun Roblox Studio connecté. Ouvre la place dans Studio avec le plugin Essaim Sync installé."
+            "Aucun Roblox Studio connecté. Ouvre la place dans Studio avec le plugin RoVibe Studio installé."
                 .into(),
         ),
         0 if bound_elsewhere => Err(format!(
@@ -192,7 +192,7 @@ async fn serve(state: Shared, hello: Hello, socket: WebSocket) {
                 "error".into(),
                 loading.context.clone(),
                 loading.place_id,
-                format!("[essaim] Outils non chargés dans Studio ({error}). Mets à jour le plugin Studio depuis l'app, puis redémarre Studio."),
+                format!("[rovibe] Outils non chargés dans Studio ({error}). Mets à jour le plugin Studio depuis l'app, puis redémarre Studio."),
             );
         }
 

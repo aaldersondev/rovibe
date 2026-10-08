@@ -48,7 +48,7 @@ pub fn write_mcp_config(state: &Shared, project_id: &str) -> std::io::Result<()>
     fs::create_dir_all(path.parent().unwrap())?;
     let config = json!({
         "mcpServers": {
-            "essaim": { "type": "http", "url": state.mcp_url(project_id) }
+            "rovibe": { "type": "http", "url": state.mcp_url(project_id) }
         }
     });
     fs::write(path, serde_json::to_vec_pretty(&config)?)
@@ -63,11 +63,17 @@ fn slug(name: &str) -> String {
     slug.trim_matches('-').to_owned()
 }
 
-fn default_root() -> PathBuf {
+/// `Documents\RoVibe`, where new projects and the asset bank go.
+pub fn documents_home() -> PathBuf {
     dirs::document_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_default()
-        .join("Essaim")
+        .join("RoVibe")
+}
+
+fn default_root() -> PathBuf {
+    let home = documents_home();
+    crate::legacy::home_in_use(&home).unwrap_or(home)
 }
 
 fn write_template(dir: &Path, name: &str) -> std::io::Result<()> {
@@ -133,7 +139,7 @@ pub fn create(
         .iter()
         .any(|project| project.path == dir)
     {
-        return Err("Ce dossier est déjà un projet Essaim".into());
+        return Err("Ce dossier est déjà un projet RoVibe".into());
     }
 
     let report = if let Some(export) = export {

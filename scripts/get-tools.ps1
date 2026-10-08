@@ -1,8 +1,8 @@
-# Fetches the code checkers Essaim runs for agents, from their official
-# GitHub releases, into dist\Essaim\tools. Versions are pinned: bump them here.
+# Fetches the code checkers RoVibe runs for agents, from their official
+# GitHub releases, into dist\RoVibe\tools. Versions are pinned: bump them here.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
-$tools = "$root\dist\Essaim\tools"
+$tools = "$root\dist\RoVibe\tools"
 New-Item -ItemType Directory -Force $tools | Out-Null
 
 $selene = '0.32.0'

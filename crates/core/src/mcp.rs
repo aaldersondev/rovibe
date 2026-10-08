@@ -981,7 +981,7 @@ fn coordinate(
         return Ok(agents::describe(state, &project.id, session));
     }
 
-    let session = session.ok_or("Les réservations demandent une session lancée depuis Essaim")?;
+    let session = session.ok_or("Les réservations demandent une session lancée depuis RoVibe")?;
     match name {
         "claim_files" => agents::claim(state, project, session, args),
         _ => Ok(agents::release(state, project, session, args)),
@@ -1029,7 +1029,7 @@ async fn serve(
         "initialize" => json!({
             "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(DEFAULT_PROTOCOL),
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "essaim", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "rovibe-mcp", "version": env!("CARGO_PKG_VERSION") },
             "instructions": INSTRUCTIONS,
         }),
         "ping" => json!({}),

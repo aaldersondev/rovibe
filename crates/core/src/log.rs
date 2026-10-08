@@ -10,7 +10,7 @@ use std::{
 };
 
 const MAX_BYTES: u64 = 1024 * 1024;
-const FILE_NAME: &str = "essaim.log";
+const FILE_NAME: &str = "rovibe.log";
 
 struct Journal {
     path: PathBuf,
@@ -24,7 +24,7 @@ static JOURNAL: OnceLock<Mutex<Journal>> = OnceLock::new();
 pub fn init(data_dir: &Path) {
     let path = data_dir.join(FILE_NAME);
     if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_BYTES) {
-        let _ = std::fs::rename(&path, data_dir.join("essaim.log.1"));
+        let _ = std::fs::rename(&path, data_dir.join("rovibe.log.1"));
     }
     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = JOURNAL.set(Mutex::new(Journal { path, file }));

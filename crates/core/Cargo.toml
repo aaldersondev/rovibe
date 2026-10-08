@@ -1,11 +1,11 @@
 [package]
-name = "essaim-core"
+name = "rovibe-core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "essaim-server"
+name = "rovibe-cli"
 path = "src/main.rs"
 
 [dependencies]

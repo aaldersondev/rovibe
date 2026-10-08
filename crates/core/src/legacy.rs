@@ -1,0 +1,215 @@
+//! What the app left on the PC when it was called Essaim.
+//!
+//! Each function here brings one of those things over to its new name, once.
+//! Nothing else in the code knows the old name.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use serde_json::Value;
+
+const OLD: &str = "Essaim";
+/// The WSL distribution of isolated agents can't be renamed from outside: an
+/// existing one keeps being used under its old name.
+pub const OLD_DISTRO: &str = "essaim";
+const OLD_PLUGIN: &str = "EssaimSync.rbxm";
+const SETTINGS: [&str; 4] = ["token", "projects.json", "sessions.json", "settings.json"];
+
+fn copy_settings(from: &Path, to: &Path) -> bool {
+    if !from.join("projects.json").exists() {
+        return false;
+    }
+    for file in SETTINGS {
+        if from.join(file).exists() {
+            let _ = fs::copy(from.join(file), to.join(file));
+        }
+    }
+    true
+}
+
+/// Fills a new, empty settings folder from the old one: under Roaming, or
+/// under Local where the very first versions kept it.
+pub fn adopt_settings(dir: &Path) {
+    if dir.join("projects.json").exists() {
+        return;
+    }
+    let candidates = [dirs::data_dir(), dirs::data_local_dir()];
+    for previous in candidates.into_iter().flatten() {
+        if copy_settings(&previous.join(OLD), dir) {
+            return;
+        }
+    }
+}
+
+fn swap_prefix(value: &mut Value, old: &Path, new: &Path) -> bool {
+    let Some(inside) = value.as_str().and_then(|path| Path::new(path).strip_prefix(old).ok()) else {
+        return false;
+    };
+    // Joining an empty remainder would leave a trailing separator.
+    let moved = if inside.as_os_str().is_empty() { new.to_path_buf() } else { new.join(inside) };
+    *value = Value::String(moved.to_string_lossy().into_owned());
+    true
+}
+
+fn rewrite(file: &Path, change: impl Fn(&mut Value) -> bool) {
+    let Some(mut content) = fs::read(file).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    else {
+        return;
+    };
+    if change(&mut content) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(&content) {
+            let _ = fs::write(file, bytes);
+        }
+    }
+}
+
+/// Moves the folder of projects and of the asset bank, `old`, to `new`, and
+/// points the registered projects at their new place. Returns what happened,
+/// for the journal; `None` when there was nothing to move.
+///
+/// The move fails as a whole while a program holds a file in there, Studio
+/// with a place open for instance. The old folder then stays in use, and the
+/// move is tried again on the next start.
+fn move_home_between(old: &Path, new: &Path, data_dir: &Path) -> Option<Result<(), String>> {
+    if !old.is_dir() || new.exists() {
+        return None;
+    }
+    if let Err(error) = fs::rename(old, new) {
+        return Some(Err(error.to_string()));
+    }
+
+    rewrite(&data_dir.join("projects.json"), |projects| {
+        let mut changed = false;
+        for project in projects.as_array_mut().into_iter().flatten() {
+            changed |= swap_prefix(&mut project["path"], old, new);
+        }
+        changed
+    });
+    rewrite(&data_dir.join("settings.json"), |settings| {
+        settings.get_mut("projects_dir").is_some_and(|dir| swap_prefix(dir, old, new))
+    });
+    Some(Ok(()))
+}
+
+fn documents() -> PathBuf {
+    dirs::document_dir().or_else(dirs::home_dir).unwrap_or_default()
+}
+
+pub fn move_home(new: &Path, data_dir: &Path) {
+    let old = documents().join(OLD);
+    match move_home_between(&old, new, data_dir) {
+        Some(Ok(())) => crate::log::info(format!(
+            "Le dossier {} s'appelle désormais {}",
+            old.display(),
+            new.display()
+        )),
+        Some(Err(error)) => crate::log::info(format!(
+            "{} reste à sa place pour l'instant ({error}) : il sera renommé à un démarrage où Studio est fermé",
+            old.display()
+        )),
+        None => {}
+    }
+}
+
+/// The old folder, for as long as it couldn't be moved.
+pub fn home_in_use(new: &Path) -> Option<PathBuf> {
+    let old = documents().join(OLD);
+    (!new.exists() && old.is_dir()).then_some(old)
+}
+
+/// A project's own traces of the old name: its folder of saved prompts, and
+/// the name of the MCP server in the instructions its agents read.
+pub fn rename_in_project(dir: &Path) {
+    let (old, new) = (dir.join(".essaim"), dir.join(".rovibe"));
+    if old.is_dir() && !new.exists() {
+        let _ = fs::rename(old, new);
+    }
+
+    let docs = dir.join("AGENTS.md");
+    if let Ok(text) = fs::read_to_string(&docs) {
+        let renamed = text.replace("MCP `essaim`", "MCP `rovibe`").replace("Essaim Sync", "RoVibe Sync");
+        if renamed != text {
+            let _ = fs::write(docs, renamed);
+        }
+    }
+}
+
+/// Where a project's "reviewed up to here" mark used to be kept.
+pub const OLD_REVIEWED: &str = "refs/essaim/reviewed";
+
+/// Removes the Studio plugin under its old file name, once the new one is
+/// installed: both would connect to the app and answer every call twice.
+pub fn remove_old_plugin(plugins: &Path) -> bool {
+    fs::remove_file(plugins.join(OLD_PLUGIN)).is_ok()
+}
+
+pub fn old_plugin_installed(plugins: &Path) -> bool {
+    plugins.join(OLD_PLUGIN).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn settings_come_over_from_the_old_folder_only_once() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = (root.path().join("old"), root.path().join("new"));
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        assert!(!copy_settings(&old, &new));
+
+        fs::write(old.join("projects.json"), "[]").unwrap();
+        fs::write(old.join("token"), "t").unwrap();
+        fs::write(old.join("essaim.log"), "x").unwrap();
+        assert!(copy_settings(&old, &new));
+        assert_eq!(fs::read_to_string(new.join("token")).unwrap(), "t");
+        assert!(!new.join("essaim.log").exists());
+    }
+
+    #[test]
+    fn moving_the_home_folder_takes_the_projects_along() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new, data) = (root.path().join("Essaim"), root.path().join("RoVibe"), root.path().join("data"));
+        fs::create_dir_all(old.join("Demo/src")).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let elsewhere = root.path().join("Ailleurs/Jeu");
+        fs::write(
+            data.join("projects.json"),
+            json!([{ "id": "a", "path": old.join("Demo") }, { "id": "b", "path": elsewhere }]).to_string(),
+        )
+        .unwrap();
+        fs::write(data.join("settings.json"), json!({ "projects_dir": old, "claude_model": "x" }).to_string()).unwrap();
+
+        assert_eq!(move_home_between(&old, &new, &data), Some(Ok(())));
+        assert!(new.join("Demo/src").is_dir() && !old.exists());
+        let projects: Value = serde_json::from_slice(&fs::read(data.join("projects.json")).unwrap()).unwrap();
+        assert_eq!(projects[0]["path"], json!(new.join("Demo")));
+        assert_eq!(projects[1]["path"], json!(elsewhere));
+        let settings: Value = serde_json::from_slice(&fs::read(data.join("settings.json")).unwrap()).unwrap();
+        assert_eq!((&settings["projects_dir"], &settings["claude_model"]), (&json!(new), &json!("x")));
+
+        // Nothing left to move, and an existing new folder is never replaced.
+        assert_eq!(move_home_between(&old, &new, &data), None);
+        fs::create_dir_all(&old).unwrap();
+        assert_eq!(move_home_between(&old, &new, &data), None);
+    }
+
+    #[test]
+    fn a_project_drops_the_old_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".essaim")).unwrap();
+        fs::write(dir.path().join(".essaim/consignes.json"), "[]").unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "via Essaim Sync.\n## Outils MCP `essaim`\nMon essaim à moi.").unwrap();
+
+        rename_in_project(dir.path());
+        assert!(dir.path().join(".rovibe/consignes.json").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(),
+            "via RoVibe Sync.\n## Outils MCP `rovibe`\nMon essaim à moi."
+        );
+    }
+}

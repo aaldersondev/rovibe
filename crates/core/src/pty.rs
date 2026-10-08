@@ -150,7 +150,7 @@ impl Session {
     }
 }
 
-/// Variables an agent host sets for the session it runs. When Essaim itself
+/// Variables an agent host sets for the session it runs. When RoVibe itself
 /// is started from such a session, passing them on would make every agent
 /// behave as that session's child (no transcript, borrowed messaging token).
 const HOST_SESSION_VARS: &[&str] = &[
@@ -241,7 +241,7 @@ fn write_mcp_config(state: &Shared, project: &Project, session_id: &str, launch:
         project.id,
         session_id
     );
-    write_json(&path, &json!({ "mcpServers": { "essaim": { "type": "http", "url": url } } }))?;
+    write_json(&path, &json!({ "mcpServers": { "rovibe": { "type": "http", "url": url } } }))?;
     Ok(shown)
 }
 
@@ -271,7 +271,7 @@ fn write_hook_settings(state: &Shared, session_id: &str, launch: &Launch) -> Res
 }
 
 /// Marks a hooks file as ours, so that a project's own is never overwritten.
-const CODEX_HOOK_TARGET: &str = "%ESSAIM_HOOK%";
+const CODEX_HOOK_TARGET: &str = "%ROVIBE_HOOK%";
 
 /// Codex reads its hooks from the project, one file for every session. The
 /// address each session reports to therefore comes from its environment,
@@ -331,7 +331,7 @@ fn build_command(
                 // The distribution's default user is the unprivileged agent,
                 // and the project is the only Windows folder mounted there.
                 let mut command = CommandBuilder::new("wsl.exe");
-                command.args(["-d", isolation::DISTRO, "--cd"]);
+                command.args(["-d", isolation::distro(), "--cd"]);
                 command.arg(isolation::mount_point(project));
                 command.args(["--", "env"]);
                 command.args(isolation::proxy_env(state));
@@ -369,7 +369,7 @@ fn build_command(
             // meets them in a project. That question is left to them: the
             // flag that skips it also leaves the session's screen empty.
             command.env(
-                "ESSAIM_HOOK",
+                "ROVIBE_HOOK",
                 format!("{}/hook/{}/{}", app_address(state), state.token, session_id),
             );
             if let Some(model) = model_for(state, launch) {
@@ -379,7 +379,7 @@ fn build_command(
             // the value isn't valid TOML, and quotes don't survive cmd.exe.
             command.arg("-c");
             command.arg(format!(
-                "mcp_servers.essaim.url={}",
+                "mcp_servers.rovibe.url={}",
                 state.session_mcp_url(&project.id, session_id)
             ));
             if launch.isolated {
@@ -409,7 +409,7 @@ fn build_command(
     if !launch.in_wsl {
         command.cwd(&project.path);
     }
-    command.env("ESSAIM_PROJECT", &project.name);
+    command.env("ROVIBE_PROJECT", &project.name);
     Ok(command)
 }
 
