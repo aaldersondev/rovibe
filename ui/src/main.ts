@@ -225,14 +225,44 @@ function createPane(session: Session): Pane {
 
   const socket = new WebSocket(socketUrl(`/ws/pty/${session.id}`));
   socket.binaryType = "arraybuffer";
-  socket.onmessage = (event) => terminal.write(new Uint8Array(event.data as ArrayBuffer));
 
   const send = (message: object) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   };
 
+  // A session may have been running for a while, in another window or before
+  // this one was reopened. What it printed was drawn for the size it had:
+  // the terminal first takes that size and replays it, and only then goes to
+  // the size of its pane and says so. Done in the other order, the agent's
+  // interface is replayed at the wrong width and its lines pile up.
+  let settled = false;
+  const settle = () => {
+    settled = true;
+    applyFit();
+    send({ t: "r", cols: terminal.cols, rows: terminal.rows });
+  };
+  let replaying = false;
+  socket.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      const start = JSON.parse(event.data) as { cols: number; rows: number; replay: number };
+      terminal.resize(start.cols, start.rows);
+      if (start.replay > 0) replaying = true;
+      else settle();
+      return;
+    }
+    const bytes = new Uint8Array(event.data as ArrayBuffer);
+    if (replaying) {
+      replaying = false;
+      terminal.write(bytes, settle);
+    } else {
+      terminal.write(bytes);
+    }
+  };
+
   terminal.onData((data) => send({ t: "i", d: data }));
-  terminal.onResize(({ cols, rows }) => send({ t: "r", cols, rows }));
+  terminal.onResize(({ cols, rows }) => {
+    if (settled) send({ t: "r", cols, rows });
+  });
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== "keydown") return true;
     if (event.ctrlKey && event.key === "c" && terminal.hasSelection()) {
@@ -250,10 +280,23 @@ function createPane(session: Session): Pane {
     return true;
   });
 
-  // A hidden pane has no size; fitting it would collapse the terminal.
-  const refit = () => {
-    if (body.clientWidth > 0 && body.clientHeight > 0) fit.fit();
+  // A hidden pane has no size, and a window being minimized or restored
+  // passes through sizes of a few pixels: fitting to those would have the
+  // agent redraw everything a few columns wide, for good as far as its
+  // history goes.
+  const applyFit = () => {
+    if (document.hidden || body.clientWidth < 160 || body.clientHeight < 80) return;
+    const proposed = fit.proposeDimensions();
+    if (!proposed || proposed.cols < 20 || proposed.rows < 5) return;
+    if (settled) fit.fit();
   };
+  // Resizing fires many times a second; the agent redraws once it stops.
+  let fitting = 0;
+  const refit = () => {
+    clearTimeout(fitting);
+    fitting = window.setTimeout(applyFit, 120);
+  };
+  document.addEventListener("visibilitychange", refit);
 
   // xterm measures its character cell when it opens. Opened while detached it
   // measures nothing, every later fit is a no-op, and the terminal stays at
@@ -270,10 +313,6 @@ function createPane(session: Session): Pane {
     // The cell size changes once the terminal font has finished loading.
     void document.fonts.ready.then(refit);
   };
-
-  // Sent even when the size didn't change: the process starts at a default
-  // size and has to learn the real one.
-  socket.onopen = () => send({ t: "r", cols: terminal.cols, rows: terminal.rows });
 
   return { mount, element, terminal, socket, state: stateLabel, files: filesLabel, target };
 }
