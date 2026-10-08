@@ -23,6 +23,11 @@ use crate::state::{Project, Shared};
 
 const DISTRO: &str = "rovibe";
 pub const CLAUDE: &str = "/home/agent/.local/bin/claude";
+pub const CODEX: &str = "/usr/local/bin/codex";
+/// What Codex's hooks run, under the same name as on Windows: the project's
+/// hooks file is one for both worlds.
+const HOOK_PATH: &str = "/usr/local/bin/rovibe-hook";
+const HOOK: &str = "#!/bin/sh\nexec curl -s --max-time 3 -X POST -H 'Content-Type: application/json' --data-binary @- \"$ROVIBE_HOOK\"\n";
 const RELAY: &str = include_str!("../plugin/relay.py");
 const RELAY_PATH: &str = "/opt/rovibe/relay.py";
 const HOSTS_PATH: &str = "/opt/rovibe/allowed-hosts";
@@ -138,6 +143,38 @@ pub fn refresh_network(state: &Shared) {
             crate::log::warn(format!("Réseau de l'environnement isolé : {error}"));
         }
     });
+}
+
+/// Whether an isolated agent of this kind runs in the distribution. Claude
+/// Code always does, and fails loudly if the distribution is missing; Codex
+/// does when it is installed there, and keeps its own sandbox otherwise.
+pub fn hosts(kind: crate::pty::Kind) -> bool {
+    match kind {
+        crate::pty::Kind::Claude => true,
+        crate::pty::Kind::Codex => has_codex(),
+        crate::pty::Kind::Shell => false,
+    }
+}
+
+/// Whether Codex is installed in the distribution. Without it, an isolated
+/// Codex session falls back on Codex's own sandbox, on Windows.
+pub fn has_codex() -> bool {
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, known)) = *cache {
+        if at.elapsed() < Duration::from_secs(60) {
+            return known;
+        }
+    }
+    let found = installed().is_some() && {
+        let mut command = std::process::Command::new("wsl.exe");
+        command.args(["-d", distro(), "-u", "root", "--", "test", "-x", CODEX]);
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
+        command.status().is_ok_and(|status| status.success())
+    };
+    *cache = Some((Instant::now(), found));
+    found
 }
 
 /// Variables that send an isolated agent's HTTPS through the proxy. Without
@@ -337,6 +374,10 @@ pub async fn prepare(state: &Shared, project: &Project) -> Result<(), String> {
     )
     .await
     .map_err(|error| format!("Le projet n'a pas pu être monté dans WSL : {error}"))?;
+
+    root_script(&format!("cat > {HOOK_PATH} <<'ROVIBE'\n{HOOK}ROVIBE\nchmod 755 {HOOK_PATH}\n"))
+        .await
+        .map_err(|error| format!("L'environnement isolé n'a pas pu être préparé : {error}"))?;
 
     // Before any agent starts, and again each time: the rules don't survive
     // a restart of the distribution, and the settings may have changed.

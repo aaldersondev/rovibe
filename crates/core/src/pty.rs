@@ -339,8 +339,31 @@ fn write_hook_settings(state: &Shared, session_id: &str, launch: &Launch) -> Res
     Ok(shown)
 }
 
-/// Marks a hooks file as ours, so that a project's own is never overwritten.
-const CODEX_HOOK_TARGET: &str = "%ROVIBE_HOOK%";
+/// What Codex's hooks run: one bare word, a program of that name being on
+/// the PATH of every session, on Windows as in the isolated distribution.
+/// Codex hands the line to the user's shell, PowerShell as a rule, where
+/// anything quoted reached curl mangled and the events were silently never
+/// sent; and one file serves every session of the project, wherever it runs.
+const CODEX_HOOK: &str = "rovibe-hook";
+/// Marks a hooks file as ours, so that a project's own is never overwritten:
+/// today's command, and the one earlier versions wrote.
+const CODEX_HOOK_MARKS: [&str; 2] = [CODEX_HOOK, "%ROVIBE_HOOK%"];
+
+/// The folder of the programs the app lends its sessions on Windows.
+fn bin_dir(state: &Shared) -> PathBuf {
+    state.data_dir.join("bin")
+}
+
+/// Writes the Windows side of `rovibe-hook`: cmd.exe expands the variable,
+/// and `-T -` reads the event from standard input.
+fn write_hook_program(state: &Shared) {
+    let dir = bin_dir(state);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(
+        dir.join("rovibe-hook.cmd"),
+        "@curl -s --max-time 3 -X POST -H Content-Type:application/json -T - %ROVIBE_HOOK%\r\n",
+    );
+}
 
 /// Codex reads its hooks from the project, one file for every session. The
 /// address each session reports to therefore comes from its environment,
@@ -348,7 +371,7 @@ const CODEX_HOOK_TARGET: &str = "%ROVIBE_HOOK%";
 fn write_codex_hooks(folder: &Path) {
     let path = folder.join(".codex").join("hooks.json");
     if let Ok(existing) = std::fs::read_to_string(&path) {
-        if !existing.contains(CODEX_HOOK_TARGET) {
+        if !CODEX_HOOK_MARKS.iter().any(|mark| existing.contains(mark)) {
             crate::log::warn(format!(
                 "{} existe déjà : Codex n'enverra ni état ni verrous pour ce projet",
                 path.display()
@@ -357,14 +380,7 @@ fn write_codex_hooks(folder: &Path) {
         }
     }
 
-    // Codex hands this line to the user's shell, PowerShell as a rule. It is
-    // written without a single quote character: nested quotes reached curl
-    // mangled and the events were silently never sent. cmd.exe is what
-    // expands the variable, and `-T -` reads the event from standard input
-    // without the `@` that PowerShell would take for its own syntax.
-    let command = format!(
-        "cmd.exe /d /c curl -s --max-time 3 -X POST -H Content-Type:application/json -T - {CODEX_HOOK_TARGET}"
-    );
+    let command = CODEX_HOOK;
     let mut hooks = serde_json::Map::new();
     for (event, matcher) in [
         ("SessionStart", None),
@@ -430,18 +446,38 @@ fn build_command(
             // Through npm's own launcher: started directly, the executable
             // inside the package draws an empty screen. None of the
             // arguments below needs quoting, which is all cmd.exe gets wrong.
-            let mut command = command_for(&locate("codex")?);
+            let hook = format!("{}/hook/{}/{}", app_address(state), state.token, session_id);
+            let mut command = if launch.in_wsl {
+                // Same door as Claude Code: the distribution, as its
+                // unprivileged user, with the project as only Windows folder.
+                let mut command = CommandBuilder::new("wsl.exe");
+                command.args(["-d", isolation::distro(), "--cd"]);
+                command.arg(isolation::mount_point(project));
+                command.args(["--", "env"]);
+                command.args(COLOR_ENV.map(|(name, value)| format!("{name}={value}")));
+                command.args(isolation::proxy_env(state));
+                command.arg(format!("ROVIBE_HOOK={hook}"));
+                command.arg(isolation::CODEX);
+                command
+            } else {
+                let mut command = command_for(&locate("codex")?);
+                write_hook_program(state);
+                let mut path = std::ffi::OsString::from(bin_dir(state));
+                if let Some(inherited) = std::env::var_os("PATH") {
+                    path.push(";");
+                    path.push(inherited);
+                }
+                command.env("PATH", path);
+                command.env("ROVIBE_HOOK", &hook);
+                command
+            };
             if let Some(id) = &launch.resume {
                 command.args(["resume", id]);
             }
-            write_codex_hooks(launch.folder(project));
             // Codex asks the user to review these hooks the first time it
             // meets them in a project. That question is left to them: the
             // flag that skips it also leaves the session's screen empty.
-            command.env(
-                "ROVIBE_HOOK",
-                format!("{}/hook/{}/{}", app_address(state), state.token, session_id),
-            );
+            write_codex_hooks(launch.folder(project));
             if let Some(model) = model_for(state, launch) {
                 command.args(["--model", &model]);
             }
@@ -452,7 +488,15 @@ fn build_command(
                 "mcp_servers.rovibe.url={}",
                 state.session_mcp_url(&project.id, session_id)
             ));
-            if launch.isolated {
+            if launch.in_wsl {
+                // The distribution is the sandbox, and Codex's own doesn't
+                // start inside it.
+                if launch.skip_permissions {
+                    command.arg("--dangerously-bypass-approvals-and-sandbox");
+                } else {
+                    command.args(["--sandbox", "danger-full-access"]);
+                }
+            } else if launch.isolated {
                 // Codex brings its own sandbox: commands run without asking,
                 // but can only write inside the project.
                 command.args(["--sandbox", "workspace-write"]);

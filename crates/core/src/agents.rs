@@ -552,10 +552,10 @@ pub async fn resume(state: &Shared, agent_id: &str) -> Result<pty::SessionInfo, 
         let project = state.project(&session.project_id).ok_or("Projet inconnu")?;
         // If the isolated environment can't be brought back, the session
         // stays closed: reopening it unconfined would betray its name.
-        if session.isolated && session.kind == Kind::Claude {
+        let in_wsl = session.isolated && isolation::hosts(session.kind);
+        if in_wsl {
             isolation::prepare(state, &project).await?;
         }
-        let in_wsl = session.isolated && session.kind == Kind::Claude;
         let launch = Launch {
             kind: session.kind,
             model: None,
