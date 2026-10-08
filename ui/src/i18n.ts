@@ -96,6 +96,60 @@ const EXACT: Record<string, string> = {
   "Celle du système": "The system's",
   Enregistrer: "Save",
 
+  // Settings page
+  Enregistré: "Saved",
+  Retour: "Back",
+  "Revenir au projet": "Back to the project",
+  Sections: "Sections",
+  Général: "General",
+  "Ce qui tient à l'app elle-même.": "What belongs to the app itself.",
+  "L'interface suit la langue du système, ou celle que tu choisis ici.": "The interface follows the system's language, or the one you choose here.",
+  "En arrière-plan, les agents continuent et l'icône près de l'horloge rouvre la fenêtre.":
+    "In the background, agents carry on and the icon by the clock brings the window back.",
+  "Elles ne partent que si la fenêtre n'est pas devant.": "They are only sent when the window isn't in front.",
+  "Quand un agent m'attend ou a fini": "When an agent needs me or is done",
+  "Dossier des nouveaux projets": "Folder for new projects",
+  "Chemin complet. Vide : Documents\\RoVibe.": "Full path. Empty: Documents\\RoVibe.",
+  Agents: "Agents",
+  "Les modèles donnés aux nouvelles sessions. Celui de Claude Code se choisit aussi au lancement.":
+    "The models given to new sessions. Claude Code's can also be chosen when starting one.",
+  "Modèle de Claude Code": "Claude Code's model",
+  "Vide : celui que Claude Code choisit lui-même.": "Empty: the one Claude Code picks itself.",
+  "ex. opus, sonnet, haiku": "e.g. opus, sonnet, haiku",
+  "Modèle de Codex": "Codex's model",
+  "Vide : celui que Codex choisit lui-même.": "Empty: the one Codex picks itself.",
+  "Le lien entre l'app et Studio.": "The link between the app and Studio.",
+  "Plugin RoVibe Studio": "RoVibe Studio plugin",
+  "Après une installation ou une mise à jour, redémarre Studio pour le charger.": "After installing or updating it, restart Studio to load it.",
+  "Raccourci « Publier sur Roblox »": "“Publish to Roblox” shortcut",
+  "À changer seulement si tu l'as changé dans Studio. Touches séparées par +.": "Change it only if you changed it in Studio. Keys separated by +.",
+  "Un agent lancé avec « Isolé » tourne dans une distribution WSL où il ne voit que son projet.":
+    "An agent started with “Isolated” runs in a WSL distribution where it only sees its project.",
+  "Distribution WSL": "WSL distribution",
+  "Créée une fois par scripts\\setup-isolation.ps1.": "Created once by scripts\\setup-isolation.ps1.",
+  Réseau: "Network",
+  "Restreint, un agent isolé ne joint que l'API de son modèle et les hôtes ci-dessous.":
+    "Restricted, an isolated agent only reaches its model's API and the hosts below.",
+  Restreint: "Restricted",
+  "Hôtes autorisés en plus": "Extra allowed hosts",
+  "En HTTPS. Un nom par hôte, ou *.domaine pour tout un domaine.": "Over HTTPS. One name per host, or *.domain for a whole domain.",
+  "À propos": "About",
+  "Mise à jour": "Update",
+  "L'app en cherche une à chaque démarrage.": "The app looks for one each time it starts.",
+  Diagnostic: "Diagnostics",
+  "Ce que l'app a fait, et ce dont elle a besoin sur ce PC.": "What the app did, and what it needs on this PC.",
+  "Code source": "Source code",
+  Installé: "Installed",
+  Installée: "Installed",
+  "Introuvable dans le PATH": "Not found in the PATH",
+  "Pas installé": "Not installed",
+  "Pas installée": "Not installed",
+  Réinstaller: "Reinstall",
+  Connecté: "Connected",
+  "Non connecté": "Not connected",
+  "Aucune mise à jour en attente": "No update waiting",
+  "Langue, modèles, Studio, agents isolés": "Language, models, Studio, isolated agents",
+
   // Journal
   "Le journal est vide.": "The journal is empty.",
   Journal: "Journal",
@@ -283,6 +337,7 @@ const EXACT: Record<string, string> = {
 /** Sentences with values: `{}` stands for each value, in order. */
 const WITH_VALUES: [string, string][] = [
   ["Erreur {}", "Error {}"],
+  ["Installer RoVibe {}", "Install RoVibe {}"],
   [
     "Travaille dans son propre dossier, sur la branche {}. Studio montre le projet tant que l'agent n'a pas connecté la synchro à sa branche.",
     "Works in its own folder, on branch {}. Studio shows the project until the agent connects the sync to its branch.",
