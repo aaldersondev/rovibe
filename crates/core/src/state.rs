@@ -28,6 +28,10 @@ pub struct Project {
     /// report 0, and only the file name tells them apart.
     #[serde(default)]
     pub place_name: Option<String>,
+    /// A project whose place must not change behind the user's back: Studio
+    /// asks before every sync, and an agent has to ask before connecting it.
+    #[serde(default)]
+    pub protected: bool,
 }
 
 impl Project {
@@ -107,6 +111,9 @@ pub struct AppState {
     pub update: Mutex<Option<String>>,
     /// The user asking for that update to be installed.
     pub install_update: broadcast::Sender<()>,
+    /// What the user chose to do with the window when closing it while
+    /// agents run: `hide` or `quit`.
+    pub window: broadcast::Sender<String>,
     pub events: broadcast::Sender<()>,
     /// Names an agent that just stopped to wait for the user.
     pub attention: broadcast::Sender<String>,
@@ -139,6 +146,7 @@ impl AppState {
             wsl_relay: Mutex::default(),
             update: Mutex::default(),
             install_update: broadcast::channel(4).0,
+            window: broadcast::channel(4).0,
             events: broadcast::channel(16).0,
             attention: broadcast::channel(16).0,
             next_id: AtomicU64::new(1),

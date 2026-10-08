@@ -286,6 +286,7 @@ mod tests {
             sync_port: 34873,
             place_id: None,
             place_name: None,
+            protected: false,
         }
     }
 

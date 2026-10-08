@@ -55,6 +55,8 @@ local env = {
 	getSyncController = function()
 		return syncController
 	end,
+	-- Ports of the sync servers of protected projects, as the app last said.
+	protectedPorts = {},
 }
 
 -- A ModuleScript built on the fly is the one way to compile code that works
@@ -137,6 +139,12 @@ local function connectOnce(port)
 	end
 	client = nil
 	pcall(created.Close, created)
+end
+
+-- Whether what comes from this sync server must be confirmed by the user,
+-- whatever the plugin's own setting says.
+function Bridge.isProtected(port)
+	return env.protectedPorts[tostring(port)] == true
 end
 
 function Bridge.setSyncController(controller)

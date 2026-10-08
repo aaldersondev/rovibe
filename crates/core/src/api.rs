@@ -84,6 +84,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
                 "sync_port": project.sync_port,
                 "place_id": project.place_id,
                 "place_name": project.place_name,
+                "protected": project.protected,
                 "sync_running": syncs.contains_key(&project.id),
                 "sync_log": syncs.get(&project.id).map(|running| {
                     let log = running.log.lock().unwrap();
@@ -355,6 +356,51 @@ pub async fn bind_project(
     }
     state.save_projects().map_err(|error| fail(error.to_string()))?;
     state.notify();
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+pub struct Protection {
+    protected: bool,
+}
+
+pub async fn protect_project(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<Protection>,
+) -> ApiResult {
+    {
+        let mut projects = state.projects.lock().unwrap();
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or_else(|| fail("Projet inconnu"))?;
+        project.protected = body.protected;
+    }
+    state.save_projects().map_err(|error| fail(error.to_string()))?;
+    // Studio has to know at once: the next sync may be seconds away.
+    crate::studio::announce_protected(&state);
+    state.notify();
+    let message = if body.protected {
+        "Projet protégé : Studio demandera avant chaque synchro, et un agent devra demander avant de la connecter."
+    } else {
+        "Projet déprotégé : la synchro s'applique sans confirmation."
+    };
+    Ok(Json(json!({ "message": message })))
+}
+
+#[derive(Deserialize)]
+pub struct WindowRequest {
+    action: String,
+}
+
+/// The window's own answer to "close while agents run?", relayed to the
+/// program that owns the window.
+pub async fn window_request(State(state): State<Shared>, Json(body): Json<WindowRequest>) -> ApiResult {
+    if !matches!(body.action.as_str(), "hide" | "quit") {
+        return Err(fail("Action inconnue"));
+    }
+    let _ = state.window.send(body.action);
     Ok(Json(json!({})))
 }
 

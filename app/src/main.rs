@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 use tauri_plugin_updater::UpdaterExt;
 
 /// Looks for a newer version once, tells the UI about it, and installs it
@@ -36,11 +40,21 @@ async fn watch_updates(app: tauri::AppHandle, server: rovibe_core::Handle) {
     }
 }
 
+/// Brings the window back from wherever it is: hidden in the notification
+/// area, minimized, or behind other windows.
+fn show(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
 
-    // When the port is taken, an RoVibe server is already running (a second
-    // launch, or the headless server): this window simply attaches to it.
+    // When the port is taken, an RoVibe server is already running (the
+    // headless one): this window simply attaches to it.
     let server = runtime
         .block_on(rovibe_core::start(rovibe_core::DEFAULT_PORT, env!("CARGO_PKG_VERSION")))
         .ok();
@@ -51,6 +65,9 @@ fn main() {
     let tasks = runtime.handle().clone();
 
     tauri::Builder::default()
+        // Starting the app again while it runs in the background is how a
+        // user asks for its window back.
+        .plugin(tauri_plugin_single_instance::init(|app, _arguments, _folder| show(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
@@ -59,15 +76,67 @@ fn main() {
                 .min_inner_size(720.0, 480.0)
                 .build()?;
 
+            // The app's place in the notification area, where it stays while
+            // agents work with the window closed.
+            let open = MenuItem::with_id(app, "open", "Ouvrir RoVibe", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quitter et arrêter les agents", true, None::<&str>)?;
+            let mut tray = TrayIconBuilder::with_id("rovibe")
+                .tooltip("RoVibe")
+                .menu(&Menu::with_items(app, &[&open, &quit])?)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        show(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+
             if let Some(server) = server {
+                // Closing the window with sessions running would end them.
+                // The page asks the user what they meant, and answers through
+                // the server; with nothing running, closing just closes.
+                let running = server.clone();
+                let asked = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        if running.running_sessions() > 0 {
+                            api.prevent_close();
+                            let _ = asked.eval("window.rovibeClosing && window.rovibeClosing()");
+                        }
+                    }
+                });
+
+                let mut answers = server.window_requests();
+                let handle = app.handle().clone();
+                let hidden = window.clone();
+                tasks.spawn(async move {
+                    while let Ok(answer) = answers.recv().await {
+                        match answer.as_str() {
+                            "hide" => {
+                                let _ = hidden.hide();
+                            }
+                            _ => handle.exit(0),
+                        }
+                    }
+                });
+
                 // An agent waiting for an answer flashes the taskbar button,
                 // which is visible whatever the user is doing; it never
                 // steals focus.
                 let mut attention = server.attention();
+                let flashing = window.clone();
                 tasks.spawn(async move {
                     while attention.recv().await.is_ok() {
-                        if !window.is_focused().unwrap_or(false) {
-                            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+                        if !flashing.is_focused().unwrap_or(false) {
+                            let _ = flashing.request_user_attention(Some(tauri::UserAttentionType::Informational));
                         }
                     }
                 });

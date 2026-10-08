@@ -178,6 +178,7 @@ pub fn create(
             .filter(|export| export["placeId"].as_u64().unwrap_or(0) == 0)
             .and_then(|export| export["place"].as_str())
             .map(str::to_owned),
+        protected: false,
     };
 
     state.projects.lock().unwrap().push(project.clone());

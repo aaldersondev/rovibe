@@ -1429,3 +1429,27 @@ dialog {
 .composer-saved select {
   max-width: 30ch;
 }
+
+/* The protection of a project: discreet when off, plain when on. */
+button.pill.guard {
+  color: var(--muted);
+}
+
+button.pill.guard.on {
+  color: var(--honey);
+  border-color: rgb(245 158 11 / 0.55);
+  background: rgb(245 158 11 / 0.1);
+}
+
+dialog label.check {
+  display: flex;
+  grid-template-columns: none;
+}
+
+dialog .actions {
+  flex-wrap: wrap;
+}
+
+dialog .actions button {
+  white-space: nowrap;
+}

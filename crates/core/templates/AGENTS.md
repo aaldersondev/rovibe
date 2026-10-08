@@ -26,7 +26,7 @@ Jeu Roblox développé sur fichiers. Roblox Studio reflète ce dossier en direct
 - `publish` : met la place en ligne, après accord de l'utilisateur dans l'app. Uniquement s'il te l'a demandé.
 - `asset_search`, `asset_insert` : cherche et insère des assets de la banque locale (`bank:<id>`) ou du Creator Store (gratuits). Les scripts d'un asset du Store arrivent désactivés.
 - `asset_save` : enregistre une instance de la place dans la banque locale.
-- `sync_connect` : connecte Studio au serveur de synchro du projet.
+- `sync_connect` : connecte Studio au serveur de synchro du projet. Sur un projet protégé, l'utilisateur doit d'abord l'accepter dans l'app, puis valider les changements dans Studio.
 
 ## Vérifier un changement
 

@@ -693,6 +693,18 @@ return function(env)
 		return "ok"
 	end
 
+	-- Sync servers whose changes Studio must show before applying them.
+	function methods.protect_ports(params)
+		if not env.protectedPorts then
+			error("Ce plugin ne sait pas protéger un projet : mets-le à jour", 0)
+		end
+		table.clear(env.protectedPorts)
+		for _, port in params.ports or {} do
+			env.protectedPorts[tostring(port)] = true
+		end
+		return "ok"
+	end
+
 	function methods.sync_connect(params)
 		local syncController = env.getSyncController()
 		if not syncController then
