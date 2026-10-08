@@ -68,7 +68,7 @@ Au démarrage, l'app lit `latest.json` sur la dernière release GitHub du dépô
 Pousser un tag `v1.2.3` lance `.github/workflows/release.yml` : il construit l'installeur de cette version et le publie avec `latest.json`. Il lui faut la clé de mise à jour dans le secret du dépôt `TAURI_SIGNING_PRIVATE_KEY` ; sans elle, le tag ne construit rien. Lancé à la main depuis l'onglet Actions, il essaie seulement la construction et garde l'installeur en artefact.
 
 ```powershell
-gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe < $env:USERPROFILE\.tauriovibe.key
+Get-Content $env:USERPROFILE\.tauri\rovibe.key -Raw | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe
 git tag v0.9.0; git push origin v0.9.0
 ```
 
