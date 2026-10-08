@@ -69,6 +69,48 @@ pub fn replace_old_plugin(state: &Shared) {
     });
 }
 
+/// What is installed on the PC. Looking each program up walks the whole
+/// PATH; the state is asked for on every change, many times a second when
+/// agents are busy, and none of this moves that fast.
+#[derive(Clone, Copy)]
+struct Installed {
+    claude: bool,
+    codex: bool,
+    git: bool,
+    sync: bool,
+    selene: bool,
+    luau_lsp: bool,
+    plugin: bool,
+}
+
+static INSTALLED: std::sync::Mutex<Option<(std::time::Instant, Installed)>> = std::sync::Mutex::new(None);
+
+fn installed() -> Installed {
+    let mut cache = INSTALLED.lock().unwrap();
+    if let Some((at, known)) = *cache {
+        if at.elapsed() < Duration::from_secs(20) {
+            return known;
+        }
+    }
+    let (selene, luau_lsp) = crate::lint::available();
+    let found = Installed {
+        claude: which::which("claude").is_ok(),
+        codex: which::which("codex").is_ok(),
+        git: which::which("git").is_ok(),
+        sync: sync::binary().is_some(),
+        selene,
+        luau_lsp,
+        plugin: plugin_installed(),
+    };
+    *cache = Some((std::time::Instant::now(), found));
+    found
+}
+
+/// Makes the next state look again, after something was just installed.
+fn forget_installed() {
+    *INSTALLED.lock().unwrap() = None;
+}
+
 pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
     // One lock at a time, each released before the next: this handler runs
     // on every refresh, next to agents asking for the same things.
@@ -165,7 +207,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
             })
         })
         .collect();
-    let (selene, luau_lsp) = crate::lint::available();
+    let found = installed();
 
     Json(json!({
         "version": state.version,
@@ -173,16 +215,12 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
         "dormant": dormant,
         "update": *state.update.lock().unwrap(),
         "isolation": isolation::available(),
-        "checkers": { "selene": selene, "luau_lsp": luau_lsp },
+        "checkers": { "selene": found.selene, "luau_lsp": found.luau_lsp },
         "projects": projects,
         "sessions": sessions,
         "studios": studios,
-        "tools": {
-            "claude": which::which("claude").is_ok(),
-            "codex": which::which("codex").is_ok(),
-            "sync": sync::binary().is_some(),
-        },
-        "plugin_installed": plugin_installed(),
+        "tools": { "claude": found.claude, "codex": found.codex, "git": found.git, "sync": found.sync },
+        "plugin_installed": found.plugin,
     }))
 }
 
@@ -436,13 +474,13 @@ pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSes
         .await;
     }
 
-    let in_wsl = body.isolated && body.kind == pty::Kind::Claude;
+    let in_wsl = body.isolated && isolation::hosts(body.kind);
     if in_wsl {
         isolation::prepare(&state, &project).await.map_err(fail)?;
     }
     let worktree = if body.worktree && body.kind != pty::Kind::Shell {
         if in_wsl {
-            return Err(fail("Une branche à part n'est pas possible pour un agent Claude Code isolé"));
+            return Err(fail("Une branche à part n'est pas possible pour un agent isolé dans WSL"));
         }
         let name = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
         let worktree = pty::Worktree {
@@ -516,6 +554,7 @@ pub async fn remove_session(State(state): State<Shared>, Path(id): Path<String>)
 
 pub async fn install_plugin(State(state): State<Shared>) -> ApiResult {
     write_plugin().await.map_err(fail)?;
+    forget_installed();
     state.notify();
     Ok(Json(json!({ "message": "Plugin installé. Redémarre Roblox Studio pour le charger." })))
 }

@@ -30,15 +30,20 @@ pub struct Settings {
     pub notifications: String,
 }
 
-/// What Claude Code needs to log in and to work: Anthropic's API and sign-in
-/// pages, and nothing a project's code or assets could be sent to.
-const MODEL_HOSTS: [&str; 6] = [
+/// What Claude Code and Codex need to log in and to work: the API and the
+/// sign-in pages of their makers, and nothing a project's code or assets
+/// could be sent to.
+const MODEL_HOSTS: [&str; 10] = [
     "anthropic.com",
     "*.anthropic.com",
     "claude.ai",
     "*.claude.ai",
     "claude.com",
     "*.claude.com",
+    "openai.com",
+    "*.openai.com",
+    "chatgpt.com",
+    "*.chatgpt.com",
 ];
 
 impl Settings {

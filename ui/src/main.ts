@@ -6,6 +6,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 
+import { lang, tr } from "./i18n";
+
+document.documentElement.lang = lang;
+
 type Kind = "claude" | "codex" | "shell";
 
 interface Project {
@@ -60,7 +64,7 @@ interface State {
   projects: Project[];
   sessions: Session[];
   studios: Studio[];
-  tools: { claude: boolean; codex: boolean; sync: boolean };
+  tools: { claude: boolean; codex: boolean; git: boolean; sync: boolean };
   checkers: { selene: boolean; luau_lsp: boolean };
   approvals: { id: number; project_id: string; requester: string; request: string }[];
   /** Version of an update waiting to be installed, if any. */
@@ -98,6 +102,9 @@ let model = localStorage.getItem("rovibe.model") ?? "";
 
 type Child = Node | string | null | false;
 
+/** Attributes a person reads, as opposed to those the page works with. */
+const SPOKEN = new Set(["title", "placeholder", "aria-label"]);
+
 function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   props: Record<string, unknown> = {},
@@ -110,11 +117,11 @@ function h<K extends keyof HTMLElementTagNameMap>(
     } else if (value === true) {
       element.setAttribute(key, "");
     } else if (value !== false && value != null) {
-      element.setAttribute(key, String(value));
+      element.setAttribute(key, SPOKEN.has(key) ? tr(String(value)) : String(value));
     }
   }
   for (const child of children) {
-    if (child) element.append(child);
+    if (child) element.append(typeof child === "string" ? tr(child) : child);
   }
   return element;
 }
@@ -141,6 +148,9 @@ const ICONS = {
   merge: "M18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21V9a9 9 0 0 0 9 9",
   grid: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
   tabs: "M3 8h18v12H3zM3 8V4h8v4",
+  check: "M20 6 9 17l-5-5",
+  alert: "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
+  setup: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
   lock: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
   send: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
 } as const;
@@ -169,6 +179,10 @@ async function api<T = { message?: string }>(path: string, method = "GET", body?
 }
 
 const toasts = h("div", { class: "toasts", "aria-live": "polite" });
+
+/** The browser's own yes/no and text questions, in the interface's language. */
+const ask = (question: string) => confirm(tr(question));
+const askText = (question: string) => prompt(tr(question));
 
 function toast(message: string, isError = false) {
   const element = h("div", { class: isError ? "toast error" : "toast" }, message);
@@ -415,7 +429,7 @@ function createPane(session: Session): Pane {
 
 async function closeSession(id: string) {
   const session = state?.sessions.find((candidate) => candidate.id === id);
-  if (session && !session.exited && !confirm(`Arrêter « ${session.title} » ?`)) return;
+  if (session && !session.exited && !ask(`Arrêter « ${session.title} » ?`)) return;
   await run(() => api(`/api/sessions/${id}`, "DELETE"));
 }
 
@@ -554,7 +568,7 @@ async function openHistoryDialog(project: Project) {
                   class: "quiet",
                   title: "Remet les fichiers dans cet état. L'état actuel est d'abord sauvegardé, rien n'est perdu.",
                   onclick: () => {
-                    if (confirm(`Revenir à « ${commit.subject} » ? L'état actuel sera sauvegardé avant.`)) {
+                    if (ask(`Revenir à « ${commit.subject} » ? L'état actuel sera sauvegardé avant.`)) {
                       void act({ action: "restore", commit: commit.hash });
                     }
                   },
@@ -671,7 +685,7 @@ async function openChangesDialog(project: Project) {
             title: "Remet ce fichier dans l'état de ta dernière relecture",
             onclick: () => {
               const what = change.status === "added" ? "Supprimer ce nouveau fichier" : "Annuler les changements de";
-              if (confirm(`${what} ${change.path} ?`)) void review({ action: "revert", path: change.path });
+              if (ask(`${what} ${change.path} ?`)) void review({ action: "revert", path: change.path });
             },
           },
           "Annuler",
@@ -757,6 +771,14 @@ async function openSettingsDialog() {
     h("option", { value: "quit" }, "Arrêter les agents et quitter"),
   );
   closing.value = localStorage.getItem("rovibe.close") ?? "";
+  const language = h(
+    "select",
+    {},
+    h("option", { value: "" }, "Celle du système"),
+    h("option", { value: "fr" }, "Français"),
+    h("option", { value: "en" }, "English"),
+  );
+  language.value = localStorage.getItem("rovibe.lang") ?? "";
 
   dialog.replaceChildren(
     h(
@@ -769,6 +791,11 @@ async function openSettingsDialog() {
             const result = await api("/api/settings", "PUT", body);
             if (closing.value) localStorage.setItem("rovibe.close", closing.value);
             else localStorage.removeItem("rovibe.close");
+            const before = localStorage.getItem("rovibe.lang") ?? "";
+            if (language.value) localStorage.setItem("rovibe.lang", language.value);
+            else localStorage.removeItem("rovibe.lang");
+            // The page is built in one language: a change starts it again.
+            if (language.value !== before) location.reload();
             dialog.close();
             return result;
           });
@@ -793,6 +820,7 @@ async function openSettingsDialog() {
       ),
       h("label", {}, h("span", {}, "Fermer la fenêtre pendant que des sessions tournent"), closing),
       h("label", {}, h("span", {}, "Notifications Windows"), fields.notifications),
+      h("label", {}, h("span", {}, "Langue"), language),
       h(
         "div",
         { class: "actions" },
@@ -888,7 +916,7 @@ async function openBankDialog() {
               "small",
               {},
               [
-                asset.class || "fichier ajouté à la main",
+                asset.class || tr("fichier ajouté à la main"),
                 asset.instances ? `${asset.instances} instances` : "",
                 `${Math.max(1, Math.round(asset.bytes / 1024))} Ko`,
                 asset.tags.join(", "),
@@ -905,7 +933,7 @@ async function openBankDialog() {
               class: "quiet",
               title: "Supprimer de la banque",
               onclick: async () => {
-                if (!confirm(`Supprimer « ${asset.name} » de la banque ?`)) return;
+                if (!ask(`Supprimer « ${asset.name} » de la banque ?`)) return;
                 try {
                   await api(`/api/assets/${asset.id}`, "DELETE");
                   bank.assets = bank.assets.filter((other) => other.id !== asset.id);
@@ -946,7 +974,7 @@ async function openBankDialog() {
       title: "Chaque asset sans image est posé un instant dans la place ouverte dans Studio, photographié, puis retiré",
       onclick: async () => {
         missing.disabled = true;
-        missing.textContent = "Aperçus en cours…";
+        missing.textContent = tr("Aperçus en cours…");
         try {
           const done = await api<{ made: number; failed: string[] }>("/api/assets/previews", "POST");
           toast(`${done.made} aperçu(s) créé(s)${done.failed.length ? `, ${done.failed.length} impossible(s)` : ""}`);
@@ -956,7 +984,7 @@ async function openBankDialog() {
           toast((error as Error).message, true);
         }
         missing.disabled = false;
-        missing.textContent = "Créer les aperçus manquants";
+        missing.textContent = tr("Créer les aperçus manquants");
       },
     },
     "Créer les aperçus manquants",
@@ -1039,7 +1067,7 @@ async function openBankDialog() {
               {},
               [
                 `${item.creator}${item.verified ? " ✓" : ""}`,
-                item.votes ? `${item.votes[0]} % sur ${item.votes[1]}` : "",
+                item.votes ? `${item.votes[0]} % / ${item.votes[1]}` : "",
                 item.triangles ? `${item.triangles} triangles` : "",
               ]
                 .filter(Boolean)
@@ -1140,7 +1168,8 @@ function describeStatus(session: Session) {
   const label = STATUS_LABELS[session.status];
   if (!label) return "";
   // The detail of a finished turn is stale; the others say what is going on.
-  return session.detail && session.status !== "idle" ? `${label} : ${session.detail}` : label;
+  // Each part is translated on its own: the detail comes from the server.
+  return session.detail && session.status !== "idle" ? `${tr(label)} : ${tr(session.detail)}` : tr(label);
 }
 
 /** Statuses seen at the last refresh, to tell a change from a steady state. */
@@ -1154,7 +1183,7 @@ function announceChanges(current: State) {
     if (before !== "working" || session.exited) continue;
 
     if (session.status === "waiting" || session.status === "idle") {
-      toast(`${session.title} ${STATUS_LABELS[session.status]}`);
+      toast(`${session.title} ${tr(STATUS_LABELS[session.status])}`);
       if (!document.hasFocus()) unseen += 1;
     }
   }
@@ -1324,7 +1353,7 @@ function renderComposer() {
                 type: "button",
                 title: "Supprimer cette consigne enregistrée",
                 onclick: () => {
-                  if (confirm(`Supprimer la consigne « ${saved[current].name} » ?`)) {
+                  if (ask(`Supprimer la consigne « ${saved[current].name} » ?`)) {
                     void savePrompts(projectId, saved.filter((_, index) => index !== current));
                   }
                 },
@@ -1339,7 +1368,7 @@ function renderComposer() {
                 title: "Garder cette consigne dans le projet pour la réutiliser",
                 disabled: !draft.value.trim(),
                 onclick: () => {
-                  const name = prompt("Nom de la consigne");
+                  const name = askText("Nom de la consigne");
                   if (name?.trim()) void savePrompts(projectId, [...saved, { name: name.trim(), text: draft.value.trim() }]);
                 },
               },
@@ -1363,6 +1392,119 @@ composer.addEventListener("submit", (event) => {
   event.preventDefault();
   broadcast();
 });
+
+/** What RoVibe needs on this PC, what it has, and how to get the rest. */
+function setupItems(current: State) {
+  return [
+    {
+      name: "Claude Code",
+      ok: current.tools.claude,
+      needed: !current.tools.codex,
+      hint: "Installe-le avec « npm install -g @anthropic-ai/claude-code », connecte-toi une fois en lançant « claude » dans un terminal, puis relance RoVibe.",
+    },
+    {
+      name: "Codex",
+      ok: current.tools.codex,
+      needed: false,
+      hint: "Facultatif. Installe-le avec « npm install -g @openai/codex », puis relance RoVibe.",
+    },
+    {
+      name: "Git",
+      ok: current.tools.git,
+      needed: true,
+      hint: "Sert à l'historique, à la relecture des changements et aux branches à part. À installer depuis git-scm.com.",
+    },
+    {
+      name: "Moteur de synchro",
+      ok: current.tools.sync,
+      needed: true,
+      hint: "rovibe-sync.exe manque à côté de l'app : réinstalle RoVibe, ou compile vendor/sync.",
+    },
+    {
+      name: "Plugin Roblox Studio",
+      ok: current.plugin_installed,
+      needed: true,
+      hint: "Le plugin relie Studio à RoVibe. Installe-le, puis redémarre Studio.",
+      action: current.tools.sync
+        ? { label: "Installer le plugin", run: () => run(() => api("/api/plugin/install", "POST")) }
+        : undefined,
+    },
+    {
+      name: "Roblox Studio connecté",
+      ok: current.studios.length > 0,
+      needed: false,
+      hint: "Ouvre une place dans Studio. S'il était ouvert pendant l'installation du plugin, redémarre-le.",
+    },
+    {
+      name: "Vérification du code",
+      ok: current.checkers.selene && current.checkers.luau_lsp,
+      needed: false,
+      hint: "Facultatif : selene et luau-lsp relisent le code des agents. Lance scripts\\get-tools.ps1 pour les installer.",
+    },
+    {
+      name: "Agents isolés",
+      ok: current.isolation,
+      needed: false,
+      hint: "Facultatif : une distribution WSL où un agent ne voit que son projet. Lance scripts\\setup-isolation.ps1 une fois.",
+    },
+  ];
+}
+
+let setupOpen = false;
+
+function drawSetup() {
+  if (!state) return;
+  const items = setupItems(state);
+  const missing = items.filter((item) => item.needed && !item.ok).length;
+  dialog.replaceChildren(
+    h("h2", {}, "Premiers pas"),
+    h(
+      "p",
+      { class: "notice" },
+      missing === 0
+        ? "Tout ce qu'il faut est en place. Le reste est facultatif."
+        : "Voici ce qu'il reste à mettre en place pour que les agents puissent travailler sur ton jeu.",
+    ),
+    h(
+      "ul",
+      { class: "setup" },
+      ...items.map((item) =>
+        h(
+          "li",
+          { class: item.ok ? "ok" : item.needed ? "todo" : "optional" },
+          icon(item.ok ? "check" : "alert"),
+          h("div", {}, h("strong", {}, item.name), item.ok ? null : h("small", {}, item.hint)),
+          !item.ok && item.action ? h("button", { onclick: item.action.run }, item.action.label) : null,
+        ),
+      ),
+    ),
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { onclick: () => dialog.close() }, "Fermer"),
+      state.projects.length === 0
+        ? h(
+            "button",
+            {
+              class: "primary",
+              onclick: () => {
+                dialog.close();
+                openProjectDialog();
+              },
+            },
+            "Créer mon premier projet",
+          )
+        : null,
+    ),
+  );
+}
+
+function openSetupDialog() {
+  setupOpen = true;
+  dialog.addEventListener("close", () => (setupOpen = false), { once: true });
+  drawSetup();
+  if (!dialog.open) dialog.showModal();
+}
 
 /** Called by the desktop window when the user closes it while sessions run:
  *  closing would end them, so the page asks what was meant. */
@@ -1493,6 +1635,7 @@ function renderRail(current: State) {
   logo.innerHTML =
     '<path fill="#a78bfa" d="M13 1l5 3v6l-5 3-5-3V4z"/><path fill="#8b5cf6" d="M6.5 12.5l5 3v6l-5 3-5-3v-6z"/><path fill="#6d3fe0" d="M19.5 12.5l5 3v6l-5 3-5-3v-6z"/>';
 
+  const todo = setupItems(current).filter((item) => item.needed && !item.ok).length;
   const tool = (glyph: keyof typeof ICONS, label: string, hint: string, action: () => void, note = "") =>
     h("button", { class: "tool", title: hint, onclick: action }, icon(glyph), h("span", {}, label), note && h("small", {}, note));
 
@@ -1544,9 +1687,6 @@ function renderRail(current: State) {
     h(
       "div",
       { class: "rail-foot" },
-      !current.tools.sync && h("div", { class: "notice" }, "Serveur de synchro introuvable : compile vendor/sync."),
-      !(current.checkers.selene && current.checkers.luau_lsp) &&
-        h("div", { class: "notice" }, "Vérification du code incomplète : lance scripts\\get-tools.ps1 pour installer selene et luau-lsp."),
       h("div", { class: "rail-head" }, h("span", {}, "Outils")),
       tool("bank", "Banque d'assets", "Modèles réutilisables et Creator Store", () => run(openBankDialog)),
       current.tools.sync &&
@@ -1559,6 +1699,13 @@ function renderRail(current: State) {
         ),
       tool("settings", "Réglages", "Modèles par défaut, dossiers, réseau des agents isolés", () => run(openSettingsDialog)),
       tool("log", "Journal", "Ce que l'app a fait", () => run(openLogDialog)),
+      tool(
+        "setup",
+        "Premiers pas",
+        "Ce dont RoVibe a besoin sur ce PC, et ce qui manque",
+        openSetupDialog,
+        todo === 0 ? "" : todo === 1 ? "1 à régler" : `${todo} à régler`,
+      ),
       h("div", { class: "version" }, `RoVibe ${current.version}`),
     ),
   );
@@ -1615,9 +1762,9 @@ function renderBar(current: State, project: Project) {
     live.length === 0
       ? "Aucun agent"
       : [
-          live.length === 1 ? "1 agent" : `${live.length} agents`,
-          busy > 0 ? `${busy} au travail` : "",
-          calling > 0 ? `${calling} en attente de toi` : "",
+          live.length === 1 ? "1 agent" : tr(`${live.length} agents`),
+          busy > 0 ? tr(`${busy} au travail`) : "",
+          calling > 0 ? tr(`${calling} en attente de toi`) : "",
         ]
           .filter(Boolean)
           .join(" · ");
@@ -1706,7 +1853,7 @@ function renderBar(current: State, project: Project) {
             disabled: linked.length === 0,
             title: "Met la place ouverte dans Studio en ligne sur Roblox, par le raccourci de publication de Studio",
             onclick: () => {
-              if (confirm(`Publier « ${linked[0].name} » sur Roblox ? Les joueurs recevront cette version.`)) {
+              if (ask(`Publier « ${linked[0].name} » sur Roblox ? Les joueurs recevront cette version.`)) {
                 void run(() => api(`/api/projects/${project.id}/publish`, "POST"));
               }
             },
@@ -1775,8 +1922,8 @@ function renderBar(current: State, project: Project) {
           {
             class: "check",
             title: current.isolation
-              ? "L'agent ne voit que le dossier du projet. Claude Code tourne dans une distribution WSL sans accès au reste du PC ; Codex dans son propre bac à sable."
-              : "Codex seulement pour l'instant. Pour Claude Code, lance scripts\\setup-isolation.ps1 une fois.",
+              ? "L'agent ne voit que le dossier du projet. Il tourne dans une distribution WSL sans accès au reste du PC ; Codex garde son propre bac à sable tant qu'il n'y est pas installé."
+              : "Codex seulement pour l'instant, dans son propre bac à sable. Pour la distribution WSL, lance scripts\\setup-isolation.ps1 une fois.",
           },
           h("input", {
             type: "checkbox",
@@ -1900,10 +2047,11 @@ function renderPanes(current: State, project: Project | undefined) {
     pane.element.classList.toggle("dead", session.exited);
     const status = session.exited ? "" : session.status;
     pane.element.dataset.status = status;
-    const label = session.exited ? "terminée" : describeStatus(session);
-    pane.state.textContent = session.isolated ? [label, "isolé"].filter(Boolean).join(", ") : label;
-    pane.files.textContent =
-      session.files.length === 0 ? "" : session.files.length === 1 ? "1 fichier tenu" : `${session.files.length} fichiers tenus`;
+    const label = session.exited ? tr("terminée") : describeStatus(session);
+    pane.state.textContent = session.isolated ? [label, tr("isolé")].filter(Boolean).join(", ") : label;
+    pane.files.textContent = tr(
+      session.files.length === 0 ? "" : session.files.length === 1 ? "1 fichier tenu" : `${session.files.length} fichiers tenus`,
+    );
     pane.files.title = session.files.join("\n");
     pane.target.hidden = session.exited;
     if (shown) visible += 1;
@@ -1970,6 +2118,12 @@ function render() {
   renderRequests(state);
   renderPanes(state, project);
   renderComposer();
+  if (setupOpen) drawSetup();
+  // A fresh install starts here, once.
+  if (state.projects.length === 0 && !localStorage.getItem("rovibe.welcomed") && !dialog.open) {
+    localStorage.setItem("rovibe.welcomed", "1");
+    openSetupDialog();
+  }
 }
 
 async function refresh() {
@@ -1984,7 +2138,12 @@ async function refresh() {
 
 function listen() {
   const socket = new WebSocket(socketUrl("/ws/events"));
-  socket.onmessage = () => void refresh();
+  // A busy agent sends changes in bursts: one refresh for each burst.
+  let pending = 0;
+  socket.onmessage = () => {
+    clearTimeout(pending);
+    pending = window.setTimeout(() => void refresh(), 60);
+  };
   socket.onclose = () => setTimeout(listen, 1500);
 }
 
