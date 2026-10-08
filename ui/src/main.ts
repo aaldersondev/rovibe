@@ -16,6 +16,8 @@ interface Project {
   place_id: number | null;
   place_name: string | null;
   sync_running: boolean;
+  /** Studio asks before every sync, and agents ask before connecting it. */
+  protected: boolean;
 }
 
 interface Session {
@@ -129,6 +131,7 @@ const ICONS = {
   settings: "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4",
   log: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
   save: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7M7 3v4a1 1 0 0 0 1 1h7",
+  lock: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
   send: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
 } as const;
 
@@ -677,6 +680,15 @@ async function openSettingsDialog() {
     isolation_hosts: field("isolation_hosts", "ex. github.com *.githubusercontent.com"),
   };
   fields.isolation_network.value = settings.isolation_network === "open" ? "open" : "";
+  // Kept by this window rather than by the server: it is about the window.
+  const closing = h(
+    "select",
+    {},
+    h("option", { value: "" }, "Me demander"),
+    h("option", { value: "hide" }, "Continuer en arrière-plan"),
+    h("option", { value: "quit" }, "Arrêter les agents et quitter"),
+  );
+  closing.value = localStorage.getItem("rovibe.close") ?? "";
 
   dialog.replaceChildren(
     h(
@@ -687,6 +699,8 @@ async function openSettingsDialog() {
           void run(async () => {
             const body = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value.trim()]));
             const result = await api("/api/settings", "PUT", body);
+            if (closing.value) localStorage.setItem("rovibe.close", closing.value);
+            else localStorage.removeItem("rovibe.close");
             dialog.close();
             return result;
           });
@@ -709,6 +723,7 @@ async function openSettingsDialog() {
         h("span", {}, "Hôtes en plus de l'API du modèle, en HTTPS. Un nom, ou *.domaine pour tout un domaine."),
         fields.isolation_hosts,
       ),
+      h("label", {}, h("span", {}, "Fermer la fenêtre pendant que des sessions tournent"), closing),
       h(
         "div",
         { class: "actions" },
@@ -1280,6 +1295,45 @@ composer.addEventListener("submit", (event) => {
   broadcast();
 });
 
+/** Called by the desktop window when the user closes it while sessions run:
+ *  closing would end them, so the page asks what was meant. */
+function askBeforeClosing() {
+  const answer = (action: "hide" | "quit") => {
+    dialog.close();
+    void api("/api/window", "POST", { action }).catch((error) => toast((error as Error).message, true));
+  };
+  const remembered = localStorage.getItem("rovibe.close");
+  if (remembered === "hide" || remembered === "quit") {
+    answer(remembered);
+    return;
+  }
+
+  const live = (state?.sessions ?? []).filter((session) => !session.exited).length;
+  const remember = h("input", { type: "checkbox" });
+  const choose = (action: "hide" | "quit") => {
+    if (remember.checked) localStorage.setItem("rovibe.close", action);
+    answer(action);
+  };
+  dialog.replaceChildren(
+    h("h2", {}, live === 1 ? "1 session est en cours" : `${live} sessions sont en cours`),
+    h(
+      "p",
+      { class: "notice" },
+      "RoVibe peut continuer en arrière-plan : les agents poursuivent leur travail, et l'icône près de l'horloge rouvre la fenêtre. Quitter les arrête ; leurs conversations seront proposées à la reprise.",
+    ),
+    h("label", { class: "check" }, remember, "Ne plus me demander"),
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { onclick: () => dialog.close() }, "Annuler"),
+      h("button", { onclick: () => choose("quit") }, "Quitter"),
+      h("button", { class: "primary", onclick: () => choose("hide") }, "Continuer en arrière-plan"),
+    ),
+  );
+  dialog.showModal();
+}
+(window as unknown as { rovibeClosing: () => void }).rovibeClosing = askBeforeClosing;
+
 const requests = h("div", { class: "requests" });
 
 /** What agents are waiting on the user to allow, e.g. putting the game online. */
@@ -1500,6 +1554,19 @@ function renderBar(current: State, project: Project) {
           },
           icon("link"),
           "Connecter",
+        ),
+        h(
+          "button",
+          {
+            class: project.protected ? "pill guard on" : "pill guard",
+            "aria-pressed": String(project.protected),
+            title: project.protected
+              ? "Projet protégé : Studio montre les changements avant chaque synchro, et un agent doit te demander avant de la connecter. Clique pour retirer la protection."
+              : "Protéger ce projet : Studio demandera avant chaque synchro, et un agent devra te demander avant de la connecter. À activer pour un jeu en ligne.",
+            onclick: () => run(() => api(`/api/projects/${project.id}/protect`, "POST", { protected: !project.protected })),
+          },
+          icon("lock"),
+          project.protected ? "Protégé" : "Protéger",
         ),
       ),
       h("span", { class: "spacer" }),

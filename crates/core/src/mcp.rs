@@ -423,9 +423,11 @@ pub async fn connect_sync(state: &Shared, project: &Project) -> Result<String, S
             Duration::from_secs(10),
         )
         .await?;
-    Ok(format!(
-        "Studio se connecte à la synchro sur le port {port}. Les fichiers du projet s'appliquent à la place sans confirmation."
-    ))
+    Ok(if project.protected {
+        format!("Studio se connecte à la synchro sur le port {port}. Le projet est protégé : Studio montre les changements à l'utilisateur, qui doit les accepter avant qu'ils s'appliquent.")
+    } else {
+        format!("Studio se connecte à la synchro sur le port {port}. Les fichiers du projet s'appliquent à la place sans confirmation.")
+    })
 }
 
 async fn asset_search(args: &Value) -> Result<String, String> {
@@ -750,6 +752,32 @@ async fn place_updated(place_id: u64) -> Option<String> {
 
 /// The `publish` tool: nothing happens until the user accepts in the app.
 async fn request_publish(state: &Shared, project: &Project, session: Option<&str>) -> Result<String, String> {
+    match ask_user(state, project, session, "publier la place sur Roblox").await {
+        Some(true) => publish(state, project).await,
+        Some(false) => Err("L'utilisateur a refusé la publication.".into()),
+        None => Err("L'utilisateur n'a pas répondu à la demande de publication en 3 minutes : rien n'a été publié.".into()),
+    }
+}
+
+/// `sync_connect` asked for by an agent. On a protected project the user
+/// decides: connecting replaces the place's scripts with the project's files.
+async fn request_sync(state: &Shared, project: &Project, session: Option<&str>) -> Result<String, String> {
+    if project.protected {
+        let request = "connecter la synchro : les fichiers du projet remplaceront les scripts de la place ouverte dans Studio";
+        match ask_user(state, project, session, request).await {
+            Some(true) => {}
+            Some(false) => return Err("L'utilisateur a refusé de connecter la synchro de ce projet protégé.".into()),
+            None => {
+                return Err("Ce projet est protégé et l'utilisateur n'a pas répondu en 3 minutes : la synchro n'a pas été connectée.".into())
+            }
+        }
+    }
+    connect_sync(state, project).await
+}
+
+/// Shows a request in the app and waits for the user's answer; `None` when
+/// they gave none in time.
+async fn ask_user(state: &Shared, project: &Project, session: Option<&str>, request: &str) -> Option<bool> {
     let requester = session
         .and_then(|id| state.sessions.lock().unwrap().get(id).map(|session| session.info.title.clone()))
         .unwrap_or_else(|| "Un agent".to_owned());
@@ -761,7 +789,7 @@ async fn request_publish(state: &Shared, project: &Project, session: Option<&str
         Approval {
             project_id: project.id.clone(),
             requester: requester.clone(),
-            request: "publier la place sur Roblox".to_owned(),
+            request: request.to_owned(),
             answer,
         },
     );
@@ -773,9 +801,9 @@ async fn request_publish(state: &Shared, project: &Project, session: Option<&str
     state.notify();
 
     match allowed {
-        Ok(Ok(true)) => publish(state, project).await,
-        Ok(_) => Err("L'utilisateur a refusé la publication.".into()),
-        Err(_) => Err("L'utilisateur n'a pas répondu à la demande de publication en 3 minutes : rien n'a été publié.".into()),
+        Ok(Ok(allowed)) => Some(allowed),
+        Ok(Err(_)) => Some(false),
+        Err(_) => None,
     }
 }
 
@@ -955,10 +983,6 @@ async fn call_tool(
         "asset_search" => asset_search(args).await,
         "asset_insert" => asset_insert(state, project, args).await,
         "asset_save" => asset_save(state, project, args).await,
-        "sync_connect" => {
-            let project = project.ok_or("Cette session n'est rattachée à aucun projet")?;
-            connect_sync(state, project).await
-        }
         "check_code" => {
             let project = project.ok_or("Cette session n'est rattachée à aucun projet")?;
             let paths: Vec<String> = args["paths"]
@@ -1053,6 +1077,10 @@ async fn serve(
                         .map(as_content),
                     None => Err("Cette session n'est rattachée à aucun projet".to_owned()),
                 },
+                "sync_connect" => match project.as_ref() {
+                    Some(project) => request_sync(&state, project, session.as_deref()).await.map(as_content),
+                    None => Err("Cette session n'est rattachée à aucun projet".to_owned()),
+                },
                 "agents_status" | "claim_files" | "release_files" => {
                     coordinate(&state, project.as_ref(), session.as_deref(), name, arguments)
                         .map(as_content)
@@ -1112,6 +1140,7 @@ mod tests {
                 sync_port: 1,
                 place_id: None,
                 place_name: None,
+                protected: false,
             };
             for _ in 0..150 {
                 studio_status(&state, Some(&project));

@@ -167,7 +167,18 @@ function App:init()
 		-- user doesn't have to type a different port for every project.
 		Bridge.setSyncController({
 			connect = function(host: string, port: string)
+				-- A session still waiting for its confirmation would
+				-- otherwise linger, and take the new one down when it
+				-- finally ends: it is answered "Abort" and given the
+				-- time to finish before the next one starts.
+				if self.state.appStatus == AppStatus.Confirming then
+					self.confirmationBindable:Fire("Abort")
+				end
+				local replacing = self.serveSession ~= nil
 				self:endSession()
+				if replacing then
+					task.wait(0.5)
+				end
 				self.setHost(host)
 				self.setPort(port)
 				self:startSession()
@@ -767,7 +778,12 @@ function App:startSession()
 			return "Accept"
 		end
 
-		local confirmationBehavior = Settings:get("confirmationBehavior")
+		-- A project the app protects is always confirmed: "Always" matches
+		-- none of the shortcuts below.
+		local _, sessionPort = self:getHostAndPort()
+		local confirmationBehavior = if Bridge.isProtected(sessionPort)
+			then "Always"
+			else Settings:get("confirmationBehavior")
 		if confirmationBehavior == "Initial" then
 			-- Only confirm if we haven't synced this project yet this session
 			if self.knownProjects[serverInfo.projectName] then

@@ -45,6 +45,7 @@ pub const DEFAULT_PORT: u16 = 34880;
 #[folder = "../../ui/dist"]
 struct Ui;
 
+#[derive(Clone)]
 pub struct Handle {
     state: Shared,
     pub port: u16,
@@ -63,6 +64,23 @@ impl Handle {
     pub fn announce_update(&self, version: &str) {
         *self.state.update.lock().unwrap() = Some(version.to_owned());
         self.state.notify();
+    }
+
+    /// How many sessions are running: what closing the app would stop.
+    pub fn running_sessions(&self) -> usize {
+        self.state
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|session| !session.exited.load(std::sync::atomic::Ordering::Relaxed))
+            .count()
+    }
+
+    /// Receives what the user answered when asked whether closing the window
+    /// should stop the agents: `hide` keeps them going, `quit` ends them.
+    pub fn window_requests(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.state.window.subscribe()
     }
 
     /// Fires when the user asks for the announced update to be installed.
@@ -161,6 +179,8 @@ fn router(state: Shared) -> Router {
         .route("/api/projects/{id}", delete(api::remove_project))
         .route("/api/projects/{id}/sync", post(api::project_sync))
         .route("/api/projects/{id}/bind", post(api::bind_project))
+        .route("/api/projects/{id}/protect", post(api::protect_project))
+        .route("/api/window", post(api::window_request))
         .route(
             "/api/projects/{id}/prompts",
             get(api::get_prompts).put(api::put_prompts),

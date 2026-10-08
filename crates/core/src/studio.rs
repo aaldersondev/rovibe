@@ -201,6 +201,7 @@ async fn serve(state: Shared, hello: Hello, socket: WebSocket) {
             studios.insert(loading.id, loading.clone());
         }
         drop(studios);
+        announce_protected(&registry);
         registry.notify();
     });
 
@@ -259,6 +260,41 @@ async fn serve(state: Shared, hello: Hello, socket: WebSocket) {
     state.notify();
 }
 
+/// Tells every editor which sync servers belong to protected projects. The
+/// plugin then asks before applying anything that comes from one of them,
+/// whoever started the connection: an agent, the app, or the user from the
+/// plugin's own panel.
+pub fn announce_protected(state: &Shared) {
+    let ports: Vec<u16> = state
+        .projects
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|project| project.protected)
+        .map(|project| project.sync_port)
+        .collect();
+    let editors: Vec<Arc<Studio>> = state
+        .studios
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|studio| studio.context == "edit")
+        .cloned()
+        .collect();
+    for studio in editors {
+        let ports = ports.clone();
+        tokio::spawn(async move {
+            let told = studio.call("protect_ports", json!({ "ports": ports }), Duration::from_secs(10)).await;
+            if told.is_err() && !ports.is_empty() {
+                crate::log::warn(format!(
+                    "Studio « {} » ne sait pas protéger un projet : mets à jour le plugin Studio depuis l'app, puis redémarre Studio",
+                    studio.name
+                ));
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +329,7 @@ mod tests {
             sync_port: 34873,
             place_id,
             place_name: place_name.map(str::to_owned),
+            protected: false,
         }
     }
 
