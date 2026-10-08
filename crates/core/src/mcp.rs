@@ -21,7 +21,7 @@ use crate::{
 };
 
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
-const INSTRUCTIONS: &str = "Pilote Roblox Studio pour le projet courant. Le code du jeu se modifie dans les fichiers du projet (synchronisés vers Studio), pas via ces outils : ils servent à inspecter la place, exécuter du Luau, lire la console et lancer des playtests.";
+const INSTRUCTIONS: &str = "Pilote Roblox Studio pour le projet courant. Le code du jeu se modifie dans les fichiers du projet (synchronisés vers Studio), pas via ces outils : ils servent à inspecter la place, exécuter du Luau, lire la console et lancer des playtests. Si ton dossier de travail est une branche à part (`git branch --show-current` commence par `rovibe/`), Studio montre le dossier principal du projet et non le tien : appelle `sync_connect` pour y faire apparaître ta branche avant de tester, et commite ton travail, que l'utilisateur fusionnera depuis l'app.";
 
 fn tools() -> Value {
     let context = json!({
@@ -175,7 +175,7 @@ fn tools() -> Value {
                 "properties": {
                     "steps": {
                         "type": "array",
-                        "description": "Étapes jouées dans l'ordre (30 au plus). Chaque étape a un seul de ces champs : `key`, `gui`, `click` ou `wait`.",
+                        "description": "Étapes jouées dans l'ordre (30 au plus). Chaque étape a un seul de ces champs : `key`, `gui`, `click`, `move`, `drag`, `look`, `scroll` ou `wait`.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -183,6 +183,13 @@ fn tools() -> Value {
                                 "hold": { "type": "integer", "description": "Durée d'appui en ms pour `key`, défaut 80, maximum 5000." },
                                 "gui": { "type": "string", "description": "Chemin d'un GuiObject à cliquer en son centre, ex. `game.Players.LocalPlayer.PlayerGui.Menu.Jouer`." },
                                 "click": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] en pixels du viewport." },
+                                "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Bouton pour `click`, `gui` et `drag`, défaut left." },
+                                "move": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] : amène le pointeur là sans cliquer, pour un survol." },
+                                "drag": { "type": "object", "description": "Glisser : `{ \"from\": [x, y], \"to\": [x, y] }`, bouton enfoncé de l'un à l'autre.", "properties": { "from": { "type": "array", "items": { "type": "integer" } }, "to": { "type": "array", "items": { "type": "integer" } } } },
+                                "look": { "type": "array", "items": { "type": "integer" }, "description": "[dx, dy] en pixels : tourne la caméra en glissant le bouton droit depuis le centre de l'écran, comme un joueur. Positif = vers la droite et vers le bas. Fonctionne aussi quand le jeu verrouille la souris (vue à la première personne)." },
+                                "scroll": { "type": "integer", "description": "Crans de molette, positif = vers l'avant (zoom avant). Au centre de l'écran, ou au point `at`." },
+                                "at": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] pour `scroll`." },
+                                "duration": { "type": "integer", "description": "Durée en ms de `drag` et `look`, défaut 400, maximum 5000." },
                                 "wait": { "type": "integer", "description": "Pause en ms, maximum 5000." }
                             }
                         }
@@ -398,7 +405,7 @@ fn studio_status(state: &Shared, project: Option<&Project>) -> String {
 }
 
 pub async fn connect_sync(state: &Shared, project: &Project) -> Result<String, String> {
-    let port = sync::start(state, project)?;
+    let port = sync::serve(state, project).await?;
     state.notify();
     let studio = studio::pick(state, Some(project), "edit")?;
 
@@ -690,9 +697,14 @@ pub async fn publish(state: &Shared, project: &Project) -> Result<String, String
 
     let keys = state.settings.lock().unwrap().publish_keys();
     let dialog = tokio::task::spawn_blocking(move || {
-        let shortcut = [input::Step::Keys { keys, hold_ms: 80 }];
-        input::run(&place, size, &shortcut)?;
-        std::thread::sleep(Duration::from_millis(1200));
+        // From behind first; through the foreground, as a person would, if
+        // Studio's keyboard state can't be reached.
+        if let Err(error) = input::press_shortcut(&place, &keys) {
+            crate::log::warn(format!("Publication en arrière-plan impossible ({error}) : Studio passe au premier plan"));
+            let shortcut = [input::Step::Keys { keys, hold_ms: 80 }];
+            input::run(&place, size, &shortcut)?;
+        }
+        std::thread::sleep(Duration::from_millis(1500));
         input::dialog_open(&place)
     })
     .await
@@ -750,6 +762,15 @@ async fn place_updated(place_id: u64) -> Option<String> {
     details["Updated"].as_str().map(str::to_owned)
 }
 
+/// The project as seen from an agent's own folder, if it has one.
+fn in_folder(project: &Project, own: Option<&crate::pty::Worktree>) -> Project {
+    let mut project = project.clone();
+    if let Some(worktree) = own {
+        project.path = worktree.dir.clone();
+    }
+    project
+}
+
 /// The `publish` tool: nothing happens until the user accepts in the app.
 async fn request_publish(state: &Shared, project: &Project, session: Option<&str>) -> Result<String, String> {
     match ask_user(state, project, session, "publier la place sur Roblox").await {
@@ -793,6 +814,7 @@ async fn ask_user(state: &Shared, project: &Project, session: Option<&str>, requ
             answer,
         },
     );
+    state.announce(&requester, &format!("Demande à {request}"), true);
     let _ = state.attention.send(requester);
     state.notify();
 
@@ -877,8 +899,24 @@ async fn play_input(state: &Shared, project: Option<&Project>, args: &Value) -> 
         return Err("`steps` doit contenir entre 1 et 30 étapes".into());
     }
 
+    let viewport = client
+        .call("viewport_info", json!({}), Duration::from_secs(10))
+        .await?;
+    let size = (
+        viewport["width"].as_i64().unwrap_or(0) as i32,
+        viewport["height"].as_i64().unwrap_or(0) as i32,
+    );
+    let center = (size.0 / 2, size.1 / 2);
+    let point = |value: &Value| -> Option<(i32, i32)> {
+        let pair = value.as_array()?;
+        Some((pair.first()?.as_i64()? as i32, pair.get(1)?.as_i64()? as i32))
+    };
+
     let mut steps = Vec::new();
     for step in listed {
+        let button = input::Button::named(step["button"].as_str())?;
+        let duration = step["duration"].as_u64().unwrap_or(400).clamp(50, 5000);
+
         if !step["key"].is_null() {
             let keys: Vec<String> = match &step["key"] {
                 Value::String(key) => vec![key.clone()],
@@ -898,26 +936,37 @@ async fn play_input(state: &Shared, project: Option<&Project>, args: &Value) -> 
             steps.push(input::Step::Click {
                 x: center["x"].as_i64().unwrap_or(0) as i32,
                 y: center["y"].as_i64().unwrap_or(0) as i32,
+                button,
             });
-        } else if let Some(point) = step["click"].as_array() {
-            steps.push(input::Step::Click {
-                x: point.first().and_then(Value::as_i64).unwrap_or(0) as i32,
-                y: point.get(1).and_then(Value::as_i64).unwrap_or(0) as i32,
-            });
+        } else if !step["click"].is_null() {
+            let (x, y) = point(&step["click"]).ok_or("`click` attend [x, y]")?;
+            steps.push(input::Step::Click { x, y, button });
+        } else if !step["move"].is_null() {
+            let (x, y) = point(&step["move"]).ok_or("`move` attend [x, y]")?;
+            steps.push(input::Step::Move { x, y });
+        } else if !step["drag"].is_null() {
+            let from = point(&step["drag"]["from"]).ok_or("`drag` attend { from: [x, y], to: [x, y] }")?;
+            let to = point(&step["drag"]["to"]).ok_or("`drag` attend { from: [x, y], to: [x, y] }")?;
+            steps.push(input::Step::Drag { from, to, button, ms: duration });
+        } else if !step["look"].is_null() {
+            // What a player does to turn the default camera: hold the right
+            // button and move. The travel is kept inside the view.
+            let (dx, dy) = point(&step["look"]).ok_or("`look` attend [dx, dy]")?;
+            let to = (
+                (center.0 + dx).clamp(1, (size.0 - 2).max(1)),
+                (center.1 + dy).clamp(1, (size.1 - 2).max(1)),
+            );
+            steps.push(input::Step::Drag { from: center, to, button: input::Button::Right, ms: duration });
+        } else if let Some(notches) = step["scroll"].as_i64() {
+            let (x, y) = point(&step["at"]).unwrap_or(center);
+            steps.push(input::Step::Scroll { x, y, notches: notches.clamp(-40, 40) as i32 });
         } else if let Some(ms) = step["wait"].as_u64() {
             steps.push(input::Step::Wait(ms.min(5000)));
         } else {
-            return Err("Chaque étape doit avoir `key`, `gui`, `click` ou `wait`".into());
+            return Err("Chaque étape doit avoir `key`, `gui`, `click`, `move`, `drag`, `look`, `scroll` ou `wait`".into());
         }
     }
 
-    let viewport = client
-        .call("viewport_info", json!({}), Duration::from_secs(10))
-        .await?;
-    let size = (
-        viewport["width"].as_i64().unwrap_or(0) as i32,
-        viewport["height"].as_i64().unwrap_or(0) as i32,
-    );
     // The window title carries the place name of the edit DataModel.
     let place = studio::pick(state, project, "edit")
         .map(|studio| studio.name.clone())
@@ -1064,6 +1113,11 @@ async fn serve(
         "tools/list" => json!({ "tools": tools() }),
         "tools/call" => {
             let project = state.project(&project_id);
+            // An agent with a folder of its own is checked and synced from
+            // there, not from the project's.
+            let own = session
+                .as_deref()
+                .and_then(|id| state.sessions.lock().unwrap().get(id).and_then(|session| session.worktree.clone()));
             let params = &request["params"];
             let name = params["name"].as_str().unwrap_or_default();
             let arguments = &params["arguments"];
@@ -1078,12 +1132,18 @@ async fn serve(
                     None => Err("Cette session n'est rattachée à aucun projet".to_owned()),
                 },
                 "sync_connect" => match project.as_ref() {
-                    Some(project) => request_sync(&state, project, session.as_deref()).await.map(as_content),
+                    Some(project) => request_sync(&state, &in_folder(project, own.as_ref()), session.as_deref())
+                        .await
+                        .map(as_content),
                     None => Err("Cette session n'est rattachée à aucun projet".to_owned()),
                 },
                 "agents_status" | "claim_files" | "release_files" => {
                     coordinate(&state, project.as_ref(), session.as_deref(), name, arguments)
                         .map(as_content)
+                }
+                "check_code" => {
+                    let project = project.as_ref().map(|project| in_folder(project, own.as_ref()));
+                    call_tool(&state, project.as_ref(), name, arguments).await.map(as_content)
                 }
                 _ => call_tool(&state, project.as_ref(), name, arguments)
                     .await

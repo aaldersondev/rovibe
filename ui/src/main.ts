@@ -18,6 +18,8 @@ interface Project {
   sync_running: boolean;
   /** Studio asks before every sync, and agents ask before connecting it. */
   protected: boolean;
+  /** Studio is being shown an agent's branch instead of the project. */
+  sync_branch: boolean;
 }
 
 interface Session {
@@ -32,6 +34,8 @@ interface Session {
   since: number;
   files: string[];
   isolated: boolean;
+  /** Its own git branch, when it works in a folder of its own. */
+  branch?: string;
 }
 
 interface Studio {
@@ -87,6 +91,8 @@ let state: State | null = null;
 let selected = localStorage.getItem("rovibe.project");
 let skipPermissions = localStorage.getItem("rovibe.skip") === "1";
 let isolated = localStorage.getItem("rovibe.isolated") === "1";
+/** New agents get a folder and a git branch of their own. */
+let apart = localStorage.getItem("rovibe.apart") === "1";
 /** Model for the next Claude Code session; empty follows the settings. */
 let model = localStorage.getItem("rovibe.model") ?? "";
 
@@ -131,6 +137,10 @@ const ICONS = {
   settings: "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4",
   log: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
   save: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7M7 3v4a1 1 0 0 0 1 1h7",
+  branch: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
+  merge: "M18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21V9a9 9 0 0 0 9 9",
+  grid: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
+  tabs: "M3 8h18v12H3zM3 8V4h8v4",
   lock: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
   send: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
 } as const;
@@ -236,13 +246,49 @@ function createPane(session: Session): Pane {
     { class: "pane", "aria-label": session.title },
     h(
       "header",
-      { class: "pane-head" },
+      {
+        class: "pane-head",
+        draggable: "true",
+        title: "Glisse pour changer l'ordre des panneaux",
+        ondragstart: (event: DragEvent) => {
+          dragging = session.title;
+          event.dataTransfer?.setData("text/plain", session.title);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        },
+        ondragend: () => {
+          dragging = null;
+          for (const pane of panes.values()) pane.element.classList.remove("drop");
+        },
+      },
       h("span", { class: `agent ${session.kind}` }, icon(session.kind)),
       h("span", { class: "title" }, session.title),
       h("span", { class: "status-dot" }),
       stateLabel,
       filesLabel,
+      session.branch
+        ? h(
+            "span",
+            {
+              class: "own-branch",
+              title: `Travaille dans son propre dossier, sur la branche ${session.branch}. Studio montre le projet tant que l'agent n'a pas connecté la synchro à sa branche.`,
+            },
+            icon("branch"),
+            "branche à part",
+          )
+        : null,
       h("span", { class: "spacer" }),
+      session.branch
+        ? h(
+            "button",
+            {
+              class: "merge",
+              title: "Intègre le travail de cet agent au projet. Ce qu'il n'a pas commité l'est d'abord ; en cas de conflit, rien n'est modifié.",
+              onclick: () => run(() => api(`/api/sessions/${session.id}/merge`, "POST")),
+            },
+            icon("merge"),
+            "Fusionner",
+          )
+        : null,
       target,
       h(
         "button",
@@ -260,6 +306,18 @@ function createPane(session: Session): Pane {
     ),
     body,
   );
+
+  element.addEventListener("dragover", (event) => {
+    if (!dragging || dragging === session.title) return;
+    event.preventDefault();
+    element.classList.add("drop");
+  });
+  element.addEventListener("dragleave", () => element.classList.remove("drop"));
+  element.addEventListener("drop", (event) => {
+    event.preventDefault();
+    element.classList.remove("drop");
+    if (dragging) movePane(session.project_id, dragging, session.title);
+  });
 
   const socket = new WebSocket(socketUrl(`/ws/pty/${session.id}`));
   socket.binaryType = "arraybuffer";
@@ -369,6 +427,7 @@ async function newSession(kind: Kind) {
       kind,
       skip_permissions: skipPermissions,
       isolated,
+      worktree: apart && kind !== "shell",
       model: kind === "claude" && model ? model : null,
     });
     created = session.id;
@@ -660,6 +719,7 @@ interface Settings {
   publish_shortcut: string;
   isolation_network: string;
   isolation_hosts: string;
+  notifications: string;
 }
 
 async function openSettingsDialog() {
@@ -678,7 +738,15 @@ async function openSettingsDialog() {
       h("option", { value: "open" }, "Ouvert : tout internet"),
     ),
     isolation_hosts: field("isolation_hosts", "ex. github.com *.githubusercontent.com"),
+    notifications: h(
+      "select",
+      { name: "notifications" },
+      h("option", { value: "" }, "Quand un agent m'attend ou a fini, si la fenêtre n'est pas devant"),
+      h("option", { value: "waiting" }, "Seulement quand un agent m'attend"),
+      h("option", { value: "off" }, "Jamais"),
+    ),
   };
+  fields.notifications.value = ["waiting", "off"].includes(settings.notifications) ? settings.notifications : "";
   fields.isolation_network.value = settings.isolation_network === "open" ? "open" : "";
   // Kept by this window rather than by the server: it is about the window.
   const closing = h(
@@ -724,6 +792,7 @@ async function openSettingsDialog() {
         fields.isolation_hosts,
       ),
       h("label", {}, h("span", {}, "Fermer la fenêtre pendant que des sessions tournent"), closing),
+      h("label", {}, h("span", {}, "Notifications Windows"), fields.notifications),
       h(
         "div",
         { class: "actions" },
@@ -1196,7 +1265,7 @@ function renderComposer() {
   );
   const current = saved.findIndex((prompt) => prompt.text === draft.value.trim());
 
-  const live = (state?.sessions ?? []).filter((session) => session.project_id === projectId && !session.exited);
+  const live = ordered(state?.sessions ?? [], projectId).filter((session) => !session.exited);
   const chosen = new Set(targets().map((session) => session.id));
   const everyone = live.length > 0 && chosen.size === live.length;
   const choose = (ids: string[], on: boolean) => {
@@ -1363,6 +1432,48 @@ function renderRequests(current: State) {
   requests.hidden = current.approvals.length === 0 && !current.update;
 }
 
+/** `grid` shows every session of the project side by side; `tabs` one at a
+ *  time, at full size, with a strip to move between them. */
+let layout: "grid" | "tabs" = localStorage.getItem("rovibe.layout") === "tabs" ? "tabs" : "grid";
+/** The session shown in `tabs` layout, per project. */
+const focused = new Map<string, string>();
+
+/** The order the user gave the panes of a project, as session titles: ids
+ *  change when a session is resumed, its title doesn't. */
+function paneOrder(projectId: string): string[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`rovibe.order.${projectId}`) ?? "[]");
+    return Array.isArray(saved) ? saved.filter((title) => typeof title === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function ordered(sessions: Session[], projectId: string) {
+  const order = paneOrder(projectId);
+  const rank = (session: Session) => {
+    const index = order.indexOf(session.title);
+    return index >= 0 ? index : order.length + Number(session.id.slice(1));
+  };
+  return sessions.filter((session) => session.project_id === projectId).sort((a, b) => rank(a) - rank(b));
+}
+
+/** Title of the pane being dragged, while a drag is going on. */
+let dragging: string | null = null;
+
+/** Puts the dragged pane where another one is, and remembers it. */
+function movePane(projectId: string, moved: string, target: string) {
+  if (!state || moved === target) return;
+  const titles = ordered(state.sessions, projectId).map((session) => session.title);
+  const from = titles.indexOf(moved);
+  const to = titles.indexOf(target);
+  if (from < 0 || to < 0) return;
+  titles.splice(from, 1);
+  titles.splice(to, 0, moved);
+  localStorage.setItem(`rovibe.order.${projectId}`, JSON.stringify(titles));
+  render();
+}
+
 function gridColumns(count: number) {
   if (count <= 1) return 1;
   if (count <= 4) return 2;
@@ -1372,6 +1483,8 @@ function gridColumns(count: number) {
 const rail = h("aside", { class: "rail" });
 const bar = h("header", { class: "bar" });
 const grid = h("div", { class: "grid" });
+const resumeBar = h("div", { class: "resume" });
+const tabsBar = h("div", { class: "tabsbar", role: "tablist" });
 const empty = h("div", { class: "empty" });
 
 function renderRail(current: State) {
@@ -1542,14 +1655,20 @@ function renderBar(current: State, project: Project) {
             onclick: () => sync(project.sync_running ? "stop" : "start"),
           },
           h("span", { class: project.sync_running ? "dot on" : "dot off" }),
-          project.sync_running ? `Synchro : port ${project.sync_port}` : "Synchro arrêtée",
+          !project.sync_running
+            ? "Synchro arrêtée"
+            : project.sync_branch
+              ? "Synchro : branche d'un agent"
+              : `Synchro : port ${project.sync_port}`,
         ),
         h(
           "button",
           {
             class: "pill accent",
             disabled: linked.length === 0,
-            title: "Connecte Studio au serveur de synchro du projet",
+            title: project.sync_branch
+              ? "Studio montre la branche d'un agent : reconnecter le ramène au dossier du projet"
+              : "Connecte Studio au serveur de synchro du projet",
             onclick: () => sync("connect"),
           },
           icon("link"),
@@ -1669,9 +1788,49 @@ function renderBar(current: State, project: Project) {
           }),
           "Isolé",
         ),
+        h(
+          "label",
+          {
+            class: "check",
+            title: "Chaque nouvel agent travaille dans une copie du projet, sur sa propre branche git : plusieurs agents peuvent alors modifier les mêmes fichiers. Tu fusionnes leur travail depuis leur panneau.",
+          },
+          h("input", {
+            type: "checkbox",
+            checked: apart,
+            onchange: (event: Event) => {
+              apart = (event.target as HTMLInputElement).checked;
+              localStorage.setItem("rovibe.apart", apart ? "1" : "0");
+            },
+          }),
+          "Branche à part",
+        ),
       ),
       h("span", { class: "spacer" }),
       h("span", { class: calling > 0 ? "summary calls" : "summary" }, summary),
+      h(
+        "div",
+        { class: "segmented", role: "group", "aria-label": "Disposition des panneaux" },
+        ...(
+          [
+            ["grid", "Tous les panneaux côte à côte"],
+            ["tabs", "Un seul panneau à la fois, en grand"],
+          ] as const
+        ).map(([mode, hint]) =>
+          h(
+            "button",
+            {
+              "aria-pressed": String(layout === mode),
+              title: hint,
+              onclick: () => {
+                layout = mode;
+                localStorage.setItem("rovibe.layout", mode);
+                render();
+              },
+            },
+            icon(mode),
+          ),
+        ),
+      ),
     ),
   );
 }
@@ -1688,41 +1847,44 @@ function renderPanes(current: State, project: Project | undefined) {
   }
 
   // Sessions of the previous run are offered, not restarted: each one starts
-  // an agent and reloads a conversation.
-  for (const card of grid.querySelectorAll(".dormant")) card.remove();
+  // an agent and reloads a conversation. They wait in a strip of their own,
+  // so the grid only holds what is running.
   const waiting = current.dormant.filter((session) => session.project_id === project?.id);
-  for (const session of waiting) {
-    grid.append(
+  resumeBar.hidden = waiting.length === 0;
+  resumeBar.replaceChildren(
+    h("span", { class: "label" }, waiting.length === 1 ? "Session interrompue" : "Sessions interrompues"),
+    ...waiting.map((session) =>
       h(
-        "section",
-        { class: "pane dormant" },
-        h(
-          "header",
-          { class: "pane-head" },
-          h("span", { class: "agent" }, icon("claude")),
-          h("span", { class: "title" }, session.title),
-          h("span", { class: "state" }, session.isolated ? "interrompue, isolée" : "interrompue"),
-        ),
-        h(
-          "div",
-          { class: "dormant-body" },
-          h("p", {}, "Cette session était ouverte à la dernière fermeture de l'app. La reprendre relance l'agent sur sa conversation."),
-          h(
-            "div",
-            { class: "actions" },
-            h(
-              "button",
-              { class: "primary", onclick: () => run(() => api(`/api/dormant/${session.agent_id}`, "POST")) },
-              "Reprendre",
-            ),
-            h("button", { onclick: () => run(() => api(`/api/dormant/${session.agent_id}`, "DELETE")) }, "Oublier"),
-          ),
-        ),
+        "span",
+        { class: "resume-item", title: "Ouverte à la dernière fermeture de l'app. La reprendre relance l'agent sur sa conversation." },
+        h("span", { class: "agent" }, icon("claude")),
+        h("strong", {}, session.title),
+        session.isolated ? h("small", {}, "isolée") : null,
+        h("button", { class: "primary", onclick: () => run(() => api(`/api/dormant/${session.agent_id}`, "POST")) }, "Reprendre"),
+        h("button", { class: "quiet", title: "Oublier cette session", onclick: () => run(() => api(`/api/dormant/${session.agent_id}`, "DELETE")) }, icon("close")),
       ),
-    );
-  }
+    ),
+    waiting.length > 1
+      ? h(
+          "button",
+          {
+            onclick: () =>
+              run(async () => {
+                for (const session of waiting) await api(`/api/dormant/${session.agent_id}`, "POST");
+              }),
+          },
+          "Tout reprendre",
+        )
+      : "",
+  );
 
-  let visible = waiting.length;
+  const mine = project ? ordered(current.sessions, project.id) : [];
+  if (project && !mine.some((session) => session.id === focused.get(project.id))) {
+    focused.set(project.id, mine[0]?.id ?? "");
+  }
+  const single = layout === "tabs" && mine.length > 1;
+
+  let visible = 0;
   for (const session of current.sessions) {
     let pane = panes.get(session.id);
     if (!pane) {
@@ -1731,8 +1893,10 @@ function renderPanes(current: State, project: Project | undefined) {
       grid.append(pane.element);
       pane.mount();
     }
-    const shown = session.project_id === project?.id;
+    const index = mine.indexOf(session);
+    const shown = index >= 0 && (!single || focused.get(session.project_id) === session.id);
     pane.element.hidden = !shown;
+    pane.element.style.order = String(index);
     pane.element.classList.toggle("dead", session.exited);
     const status = session.exited ? "" : session.status;
     pane.element.dataset.status = status;
@@ -1744,6 +1908,30 @@ function renderPanes(current: State, project: Project | undefined) {
     pane.target.hidden = session.exited;
     if (shown) visible += 1;
   }
+
+  tabsBar.hidden = !single;
+  tabsBar.replaceChildren(
+    ...mine.map((session) =>
+      h(
+        "button",
+        {
+          class: "tab",
+          role: "tab",
+          "aria-selected": String(focused.get(session.project_id) === session.id),
+          "data-status": session.exited ? "" : session.status,
+          title: describeStatus(session),
+          onclick: () => {
+            focused.set(session.project_id, session.id);
+            render();
+            panes.get(session.id)?.terminal.focus();
+          },
+        },
+        h("span", { class: `agent ${session.kind}` }, icon(session.kind)),
+        session.title,
+        h("span", { class: "status-dot" }),
+      ),
+    ),
+  );
 
   grid.style.gridTemplateColumns = `repeat(${gridColumns(visible)}, minmax(0, 1fr))`;
 
@@ -1801,6 +1989,6 @@ function listen() {
 }
 
 grid.append(empty);
-app.append(h("div", { class: "shell" }, rail, h("main", { class: "main" }, bar, requests, grid, composer)), dialog, toasts);
+app.append(h("div", { class: "shell" }, rail, h("main", { class: "main" }, bar, requests, resumeBar, tabsBar, grid, composer)), dialog, toasts);
 void refresh();
 listen();

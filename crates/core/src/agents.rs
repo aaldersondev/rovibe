@@ -425,6 +425,7 @@ pub async fn hook(
             let tool = event["tool_name"].as_str().unwrap_or_default();
             session.set_status("waiting", format!("demande l'autorisation d'utiliser {tool}"));
             let _ = state.attention.send(session.info.title.clone());
+            state.announce(&session.info.title, &format!("Demande l'autorisation d'utiliser {tool}"), true);
         }
         "Notification" => {
             // The same event also fires when the agent has simply been idle
@@ -434,11 +435,13 @@ pub async fn hook(
                 let message = event["message"].as_str().unwrap_or("attend ta réponse");
                 session.set_status("waiting", message);
                 let _ = state.attention.send(session.info.title.clone());
+                state.announce(&session.info.title, message, true);
             }
         }
         "Stop" => {
             session.set_status("idle", "");
             let _ = state.attention.send(session.info.title.clone());
+            state.announce(&session.info.title, "A fini son tour", false);
         }
         _ => {}
     }
@@ -466,6 +469,9 @@ pub struct Saved {
     pub skip_permissions: bool,
     #[serde(default)]
     pub isolated: bool,
+    /// The agent's own folder and branch, kept for when it comes back.
+    #[serde(default)]
+    pub worktree: Option<pty::Worktree>,
 }
 
 /// Records the agents that are running, so that the next start of the app
@@ -490,6 +496,7 @@ pub fn save_sessions(state: &Shared) {
                 used: session.used.load(Ordering::Relaxed),
                 skip_permissions: session.skip_permissions,
                 isolated: session.isolated,
+                worktree: session.worktree.clone(),
             })
         })
         .collect();
@@ -559,6 +566,9 @@ pub async fn resume(state: &Shared, agent_id: &str) -> Result<pty::SessionInfo, 
             // An agent that never got a prompt left no conversation to
             // resume; it simply starts again under the same name.
             resume: session.used.then(|| session.agent_id.clone()),
+            // Its folder may be gone, deleted by hand: it then starts again
+            // in the project's own.
+            worktree: session.worktree.clone().filter(|worktree| worktree.dir.is_dir()),
         };
         pty::spawn(state, &project, launch)
     };

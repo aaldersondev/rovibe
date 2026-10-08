@@ -1,6 +1,9 @@
 //! RoVibe's local server: agent terminals, the Studio bridge, the MCP
 //! endpoint and the web UI, all on one loopback port.
 
+// The list of MCP tools is one large `json!` literal.
+#![recursion_limit = "256"]
+
 mod agents;
 mod api;
 mod assets;
@@ -37,6 +40,7 @@ use axum::{
 };
 use rust_embed::Embed;
 
+pub use state::Notice;
 use state::{AppState, Shared};
 
 pub const DEFAULT_PORT: u16 = 34880;
@@ -64,6 +68,11 @@ impl Handle {
     pub fn announce_update(&self, version: &str) {
         *self.state.update.lock().unwrap() = Some(version.to_owned());
         self.state.notify();
+    }
+
+    /// Messages worth a system notification when the window isn't in front.
+    pub fn notices(&self) -> tokio::sync::broadcast::Receiver<Notice> {
+        self.state.notices.subscribe()
     }
 
     /// How many sessions are running: what closing the app would stop.
@@ -191,6 +200,7 @@ fn router(state: Shared) -> Router {
         )
         .route("/api/sessions", post(api::create_session))
         .route("/api/sessions/{id}", delete(api::remove_session))
+        .route("/api/sessions/{id}/merge", post(api::merge_session))
         .route("/api/plugin/install", post(api::install_plugin))
         .route("/api/assets", get(api::list_assets))
         .route("/api/assets/{id}", delete(api::remove_asset).put(api::edit_asset))

@@ -6,13 +6,40 @@
 //! while the user keeps the foreground, the keyboard and the mouse. Posted to
 //! Studio's main window they are lost, which long made this look impossible.
 //!
-//! Studio's own shortcuts (publishing) are another matter: those go through
-//! the foreground, the way a person presses them.
+//! Studio's own shortcuts (publishing) are read by its main window, which
+//! looks up Shift, Ctrl and Alt in its keyboard state rather than in the
+//! message. They too are pressed from behind: that state is set for the time
+//! of the key, then put back. Going through the foreground, the way a person
+//! presses them, remains the fallback.
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
+}
+
+impl Button {
+    pub fn named(name: Option<&str>) -> Result<Self, String> {
+        match name.map(str::to_lowercase).as_deref() {
+            None | Some("left" | "gauche") => Ok(Self::Left),
+            Some("right" | "droit") => Ok(Self::Right),
+            Some("middle" | "milieu") => Ok(Self::Middle),
+            Some(other) => Err(format!("Bouton inconnu : {other} (left, right ou middle)")),
+        }
+    }
+}
+
+/// Positions are viewport pixels, origin at the top-left corner of the 3D view.
 pub enum Step {
     Keys { keys: Vec<String>, hold_ms: u64 },
-    /// Viewport pixels, origin at the top-left corner of the 3D view.
-    Click { x: i32, y: i32 },
+    Click { x: i32, y: i32, button: Button },
+    /// Moves the pointer there and leaves it, for hover effects.
+    Move { x: i32, y: i32 },
+    /// Presses at `from`, travels to `to` over `ms`, releases.
+    Drag { from: (i32, i32), to: (i32, i32), button: Button, ms: u64 },
+    /// Wheel notches at a point; positive is away from the user.
+    Scroll { x: i32, y: i32, notches: i32 },
     Wait(u64),
 }
 
@@ -25,23 +52,25 @@ mod win {
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
-                IsWindowEnabled, SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+                GetKeyboardState, IsWindowEnabled, SendInput, SetKeyboardState, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
                 KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_LEFTDOWN,
                 MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEINPUT,
             },
             WindowsAndMessaging::{
                 BringWindowToTop, EnumChildWindows, EnumWindows, GetCursorPos, GetForegroundWindow,
                 GetWindowTextW,
-                GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
+                GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW,
+                PostMessageW, MSG, PM_NOREMOVE, WM_ACTIVATE,
                 SetCursorPos, ShowWindow, SW_RESTORE, SW_SHOWNOACTIVATE, WM_KEYDOWN, WM_KEYUP,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
                 SetForegroundWindow, SetWindowPos, WindowFromPoint, HWND_NOTOPMOST, HWND_TOPMOST,
                 SWP_NOMOVE, SWP_NOSIZE,
             },
         },
     };
 
-    use super::Step;
+    use super::{Button, Step};
 
     /// Scancode of a key by its position on a US keyboard, and whether it
     /// lives on the extended block. Roblox identifies keys by position, so
@@ -154,10 +183,26 @@ mod win {
         PostMessageW(view, message, buttons, position as isize);
     }
 
+    /// The messages of a mouse button, and the flag that says it is held
+    /// while other mouse messages go by.
+    fn button_messages(button: Button) -> (u32, u32, usize) {
+        match button {
+            Button::Left => (WM_LBUTTONDOWN, WM_LBUTTONUP, 0x01),
+            Button::Right => (WM_RBUTTONDOWN, WM_RBUTTONUP, 0x02),
+            Button::Middle => (WM_MBUTTONDOWN, WM_MBUTTONUP, 0x10),
+        }
+    }
+
+    fn inside(size: (i32, i32), x: i32, y: i32) -> Result<(), String> {
+        if (0..size.0).contains(&x) && (0..size.1).contains(&y) {
+            Ok(())
+        } else {
+            Err(format!("Le point ({x}, {y}) est hors du viewport ({} x {}) : étape annulée", size.0, size.1))
+        }
+    }
+
     /// Plays the steps in the game without Studio coming forward.
     unsafe fn play_behind(view: HWND, size: (i32, i32), steps: &[Step], resolved: &[Vec<Key>]) -> Result<(), String> {
-        const LEFT_BUTTON: usize = 1;
-
         for (step, keys) in steps.iter().zip(resolved) {
             match step {
                 Step::Keys { hold_ms, .. } => {
@@ -169,10 +214,9 @@ mod win {
                         post_key(view, key, true);
                     }
                 }
-                Step::Click { x, y } => {
-                    if !(0..size.0).contains(x) || !(0..size.1).contains(y) {
-                        return Err(format!("Le point ({x}, {y}) est hors du viewport ({} x {}) : clic annulé", size.0, size.1));
-                    }
+                Step::Click { x, y, button } => {
+                    inside(size, *x, *y)?;
+                    let (down, up, held) = button_messages(*button);
                     // Roblox only registers a hover after a move, and a
                     // button only activates if it was hovered for a few
                     // frames before the press.
@@ -180,13 +224,129 @@ mod win {
                     sleep(Duration::from_millis(40));
                     post_mouse(view, WM_MOUSEMOVE, 0, *x, *y);
                     sleep(Duration::from_millis(150));
-                    post_mouse(view, WM_LBUTTONDOWN, LEFT_BUTTON, *x, *y);
+                    post_mouse(view, down, held, *x, *y);
                     sleep(Duration::from_millis(90));
-                    post_mouse(view, WM_LBUTTONUP, 0, *x, *y);
+                    post_mouse(view, up, 0, *x, *y);
+                }
+                Step::Move { x, y } => {
+                    inside(size, *x, *y)?;
+                    post_mouse(view, WM_MOUSEMOVE, 0, (*x - 2).max(0), *y);
+                    sleep(Duration::from_millis(40));
+                    post_mouse(view, WM_MOUSEMOVE, 0, *x, *y);
+                }
+                Step::Drag { from, to, button, ms } => {
+                    inside(size, from.0, from.1)?;
+                    inside(size, to.0, to.1)?;
+                    let (down, up, held) = button_messages(*button);
+                    post_mouse(view, WM_MOUSEMOVE, 0, from.0, from.1);
+                    sleep(Duration::from_millis(120));
+                    post_mouse(view, down, held, from.0, from.1);
+                    // One move per frame or so: a single jump would read
+                    // as a click somewhere else, not as a drag.
+                    let moves = (*ms / 16).clamp(4, 240) as i32;
+                    for index in 1..=moves {
+                        let along = |a: i32, b: i32| a + (b - a) * index / moves;
+                        post_mouse(view, WM_MOUSEMOVE, held, along(from.0, to.0), along(from.1, to.1));
+                        sleep(Duration::from_millis(*ms / moves as u64));
+                    }
+                    sleep(Duration::from_millis(60));
+                    post_mouse(view, up, 0, to.0, to.1);
+                }
+                Step::Scroll { x, y, notches } => {
+                    inside(size, *x, *y)?;
+                    post_mouse(view, WM_MOUSEMOVE, 0, *x, *y);
+                    sleep(Duration::from_millis(60));
+                    // Unlike the other mouse messages, the wheel's position
+                    // is given in screen coordinates.
+                    let mut origin = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    GetWindowRect(view, &mut origin);
+                    let step = if *notches < 0 { -1 } else { 1 };
+                    for _ in 0..notches.unsigned_abs().min(40) {
+                        let turn = ((120 * step) as i16 as u16 as usize) << 16;
+                        post_mouse(view, WM_MOUSEWHEEL, turn, origin.left + *x, origin.top + *y);
+                        sleep(Duration::from_millis(30));
+                    }
                 }
                 Step::Wait(ms) => sleep(Duration::from_millis(*ms)),
             }
             sleep(Duration::from_millis(60));
+        }
+        Ok(())
+    }
+
+    /// Presses one of Studio's own shortcuts, such as the one that publishes,
+    /// without Studio coming forward: one key, with any of Shift, Ctrl, Alt.
+    pub fn press_shortcut(place_name: &str, names: &[String]) -> Result<(), String> {
+        const MODIFIERS: [(u16, usize); 3] = [(0x10, 0xA0), (0x11, 0xA2), (VK_ALT, 0xA4)];
+
+        let studio = crate::screenshot::win::find(place_name)?;
+        let mut held = Vec::new();
+        let mut keys = Vec::new();
+        for name in names {
+            let virtual_key = virtual_key(name)?;
+            let (scan, extended) = scancode(name)?;
+            match MODIFIERS.iter().find(|(modifier, _)| *modifier == virtual_key) {
+                Some(modifier) => held.push(*modifier),
+                None => keys.push(Key { virtual_key, scan, extended }),
+            }
+        }
+        let [key] = keys.as_slice() else {
+            return Err("Un raccourci a une seule touche en plus de Maj, Ctrl et Alt".into());
+        };
+
+        unsafe {
+            if IsWindowEnabled(studio) == 0 {
+                return Err("Une boîte de dialogue est ouverte dans Roblox Studio et bloque les entrées : ferme-la d'abord".into());
+            }
+            // Sharing Studio's input state is what lets this thread write
+            // the modifiers where Studio will read them.
+            // Studio only acts on a shortcut in a window it believes active.
+            // Told so, it does, while the real foreground stays where it is.
+            let behind = !in_front(studio);
+            if behind {
+                PostMessageW(studio, WM_ACTIVATE, 1, 0);
+                sleep(Duration::from_millis(300));
+            }
+
+            // A worker thread has no message queue until it asks for a
+            // message, and without one there is no input state to share.
+            let mut message: MSG = std::mem::zeroed();
+            PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+
+            let current = GetCurrentThreadId();
+            let owner = GetWindowThreadProcessId(studio, std::ptr::null_mut());
+            if AttachThreadInput(current, owner, 1) == 0 {
+                return Err("L'état du clavier de Roblox Studio n'est pas accessible".into());
+            }
+            let mut before = [0u8; 256];
+            GetKeyboardState(before.as_mut_ptr());
+            let mut pressed = before;
+            for (modifier, left) in &held {
+                pressed[*modifier as usize] |= 0x80;
+                pressed[*left] |= 0x80;
+            }
+            SetKeyboardState(pressed.as_ptr());
+
+            let alt = held.iter().any(|(modifier, _)| *modifier == VK_ALT);
+            let mut detail = 1u32 | (u32::from(key.scan) << 16);
+            if key.extended {
+                detail |= 1 << 24;
+            }
+            if alt {
+                detail |= 1 << 29;
+            }
+            let (down, up) = if alt { (WM_SYSKEYDOWN, WM_SYSKEYUP) } else { (WM_KEYDOWN, WM_KEYUP) };
+            PostMessageW(studio, down, key.virtual_key as usize, detail as isize);
+            sleep(Duration::from_millis(150));
+            PostMessageW(studio, up, key.virtual_key as usize, (detail | 0xC000_0000) as isize);
+            // Studio must have read the key before the modifiers go back up.
+            sleep(Duration::from_millis(250));
+
+            SetKeyboardState(before.as_ptr());
+            AttachThreadInput(current, owner, 0);
+            if behind && !in_front(studio) {
+                PostMessageW(studio, WM_ACTIVATE, 0, 0);
+            }
         }
         Ok(())
     }
@@ -375,7 +535,7 @@ mod win {
                         send_key(*code, *extended, true);
                     }
                 }
-                Step::Click { x, y } => {
+                Step::Click { x, y, .. } => {
                     let (screen_x, screen_y) = (area.left + x, area.top + y);
                     let inside = (area.left..area.right).contains(&screen_x)
                         && (area.top..area.bottom).contains(&screen_y);
@@ -397,6 +557,8 @@ mod win {
                     send_mouse(MOUSEEVENTF_LEFTUP, 0, 0);
                 }
                 Step::Wait(ms) => sleep(Duration::from_millis(*ms)),
+                // Only the game takes the rest; Studio's shortcuts are keys.
+                Step::Move { .. } | Step::Drag { .. } | Step::Scroll { .. } => {}
             }
             sleep(Duration::from_millis(60));
         }
@@ -469,11 +631,18 @@ mod win {
         unsafe { viewport_rect(studio, size) }
     }
 
-    /// Whether a modal dialog is open in Studio, which shows as its main
-    /// window being disabled.
+    /// Whether Studio has a dialog open: its main window is disabled by a
+    /// modal one, or another of its windows is on screen beside it.
     pub fn dialog_open(place_name: &str) -> Result<bool, String> {
         let studio = crate::screenshot::win::find(place_name)?;
-        Ok(unsafe { IsWindowEnabled(studio) == 0 })
+        unsafe {
+            if IsWindowEnabled(studio) == 0 {
+                return Ok(true);
+            }
+            let mut search = DialogSearch { process: process_of(studio), main: studio, title: None };
+            EnumWindows(Some(match_dialog), &mut search as *mut _ as LPARAM);
+            Ok(search.title.is_some_and(|title| !title.is_empty()))
+        }
     }
 
     struct DialogSearch {
@@ -557,7 +726,7 @@ mod win {
 #[cfg(windows)]
 pub(crate) use win::viewport_area;
 #[cfg(windows)]
-pub use win::{blocking_dialog, check_keys, dialog_open, run, run_in_game};
+pub use win::{blocking_dialog, check_keys, dialog_open, press_shortcut, run, run_in_game};
 
 #[cfg(not(windows))]
 pub fn check_keys(_keys: &[String]) -> Result<(), String> {
@@ -595,6 +764,11 @@ pub fn describe_dialog(title: &str) -> String {
     } else {
         format!("la boîte de dialogue « {title} »")
     }
+}
+
+#[cfg(not(windows))]
+pub fn press_shortcut(_place_name: &str, _keys: &[String]) -> Result<(), String> {
+    Err("Les entrées clavier et souris ne sont disponibles que sous Windows".into())
 }
 
 #[cfg(not(windows))]

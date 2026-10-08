@@ -59,6 +59,18 @@ pub struct SessionInfo {
     pub project_id: String,
     pub kind: Kind,
     pub title: String,
+    /// The branch the agent works on, when it has a folder of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// A copy of the project for one agent: its own folder on its own git
+/// branch. Several agents can then rewrite the same file, and their work
+/// meets when the user merges it.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct Worktree {
+    pub dir: PathBuf,
+    pub branch: String,
 }
 
 pub struct Status {
@@ -82,6 +94,15 @@ pub struct Launch {
     /// The agent runs inside the isolation distribution, which
     /// `isolation::prepare` has made ready for this project.
     pub in_wsl: bool,
+    /// The folder the agent works in instead of the project's own.
+    pub worktree: Option<Worktree>,
+}
+
+impl Launch {
+    /// Where the agent starts: its own folder if it has one.
+    pub fn folder<'a>(&'a self, project: &'a Project) -> &'a Path {
+        self.worktree.as_ref().map_or(&project.path, |worktree| &worktree.dir)
+    }
 }
 
 pub struct Session {
@@ -89,6 +110,7 @@ pub struct Session {
     pub exited: AtomicBool,
     pub skip_permissions: bool,
     pub isolated: bool,
+    pub worktree: Option<Worktree>,
     /// The agent's own conversation id, needed to resume it later.
     pub agent_id: Mutex<Option<String>>,
     /// Whether the agent ever received a prompt: one that didn't has no
@@ -323,8 +345,8 @@ const CODEX_HOOK_TARGET: &str = "%ROVIBE_HOOK%";
 /// Codex reads its hooks from the project, one file for every session. The
 /// address each session reports to therefore comes from its environment,
 /// which also keeps the app's token out of a file that may be committed.
-fn write_codex_hooks(project: &Project) {
-    let path = project.path.join(".codex").join("hooks.json");
+fn write_codex_hooks(folder: &Path) {
+    let path = folder.join(".codex").join("hooks.json");
     if let Ok(existing) = std::fs::read_to_string(&path) {
         if !existing.contains(CODEX_HOOK_TARGET) {
             crate::log::warn(format!(
@@ -412,7 +434,7 @@ fn build_command(
             if let Some(id) = &launch.resume {
                 command.args(["resume", id]);
             }
-            write_codex_hooks(project);
+            write_codex_hooks(launch.folder(project));
             // Codex asks the user to review these hooks the first time it
             // meets them in a project. That question is left to them: the
             // flag that skips it also leaves the session's screen empty.
@@ -468,7 +490,7 @@ fn build_command(
     // wsl.exe itself starts from a neutral folder: `--cd` is what places the
     // agent, and a Windows working directory would only leak a path.
     if !launch.in_wsl {
-        command.cwd(&project.path);
+        command.cwd(launch.folder(project));
     }
     command.env("ROVIBE_PROJECT", &project.name);
     Ok(command)
@@ -532,6 +554,7 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         title: launch
             .title
             .unwrap_or_else(|| format!("{} #{number}", launch.kind.label())),
+        branch: launch.worktree.as_ref().map(|worktree| worktree.branch.clone()),
     };
 
     let session = Arc::new(Session {
@@ -539,6 +562,7 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         exited: AtomicBool::new(false),
         skip_permissions: launch.skip_permissions,
         isolated: launch.isolated,
+        worktree: launch.worktree.clone(),
         agent_id: Mutex::new(agent_id),
         used: AtomicBool::new(launch.resume.is_some()),
         touched: Mutex::default(),

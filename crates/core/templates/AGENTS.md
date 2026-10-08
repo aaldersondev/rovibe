@@ -20,7 +20,7 @@ Jeu Roblox développé sur fichiers. Roblox Studio reflète ce dossier en direct
 - `get_console` : sortie de la console Studio, avec un curseur pour ne lire que le nouveau.
 - `playtest` : démarre ou arrête un test, et attend qu'il soit prêt.
 - `play_move` : fait marcher le personnage jusqu'à une position ou une instance pendant un test Play.
-- `play_input` : vraies touches et vrais clics dans le jeu (interfaces, outils, ProximityPrompt). Se joue en arrière-plan, sans prendre le clavier ni la souris de l'utilisateur.
+- `play_input` : vraies touches et vrais clics dans le jeu (interfaces, outils, ProximityPrompt). Aussi : clic droit, molette, glisser, et `look` pour tourner la caméra. Se joue en arrière-plan, sans prendre le clavier ni la souris de l'utilisateur.
 - `check_code` : vérifie le code (selene + types Luau) sans lancer le jeu. Les erreurs d'un fichier que tu viens d'écrire te sont aussi renvoyées automatiquement.
 - `screenshot` : capture la vue 3D de Studio pour voir le rendu réel.
 - `publish` : met la place en ligne, après accord de l'utilisateur dans l'app. Uniquement s'il te l'a demandé.

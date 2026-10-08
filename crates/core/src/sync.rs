@@ -21,6 +21,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct SyncProc {
     pub port: u16,
+    /// The folder being served: the project's, or the one of an agent that
+    /// asked to see its own branch in Studio.
+    pub source: PathBuf,
     pub log: Arc<Mutex<VecDeque<String>>>,
     stop: Arc<Notify>,
 }
@@ -78,6 +81,29 @@ fn collect<R: AsyncRead + Unpin + Send + 'static>(stream: R, log: Arc<Mutex<VecD
     });
 }
 
+/// Serves the project from `project.path`, replacing a server that serves it
+/// from another folder. That is how Studio moves between the project and an
+/// agent's branch: one server per project, on the project's port.
+pub async fn serve(state: &Shared, project: &Project) -> Result<u16, String> {
+    let elsewhere = state
+        .syncs
+        .lock()
+        .unwrap()
+        .get(&project.id)
+        .filter(|running| running.source != project.path)
+        .map(|running| running.stop.clone());
+    if let Some(stop) = elsewhere {
+        stop.notify_one();
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if !state.syncs.lock().unwrap().contains_key(&project.id) && port_is_free(project.sync_port) {
+                break;
+            }
+        }
+    }
+    start(state, project)
+}
+
 pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
     if let Some(running) = state.syncs.lock().unwrap().get(&project.id) {
         return Ok(running.port);
@@ -123,6 +149,7 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
         project.id.clone(),
         SyncProc {
             port: project.sync_port,
+            source: project.path.clone(),
             log,
             stop: stop.clone(),
         },

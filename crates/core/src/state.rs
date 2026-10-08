@@ -59,6 +59,13 @@ pub struct LogEntry {
 }
 
 /// Something an agent may only do once the user has said yes in the app.
+/// A short message for the user: an agent needs them, or has finished.
+#[derive(Clone)]
+pub struct Notice {
+    pub title: String,
+    pub body: String,
+}
+
 pub struct Approval {
     pub project_id: String,
     pub requester: String,
@@ -117,6 +124,8 @@ pub struct AppState {
     pub events: broadcast::Sender<()>,
     /// Names an agent that just stopped to wait for the user.
     pub attention: broadcast::Sender<String>,
+    /// What the desktop may tell the user while they look elsewhere.
+    pub notices: broadcast::Sender<Notice>,
     next_id: AtomicU64,
 }
 
@@ -149,6 +158,7 @@ impl AppState {
             window: broadcast::channel(4).0,
             events: broadcast::channel(16).0,
             attention: broadcast::channel(16).0,
+            notices: broadcast::channel(16).0,
             next_id: AtomicU64::new(1),
         }
     }
@@ -162,6 +172,19 @@ impl AppState {
     }
 
     /// Tells every open UI that the state snapshot is stale.
+    /// Sends a notice, unless the user's settings silence that kind:
+    /// `waiting` is an agent that needs them, the other kind one that is done.
+    pub fn announce(&self, title: &str, body: &str, waiting: bool) {
+        let wanted = match self.settings.lock().unwrap().notifications.trim() {
+            "off" => false,
+            "waiting" => waiting,
+            _ => true,
+        };
+        if wanted {
+            let _ = self.notices.send(Notice { title: title.to_owned(), body: body.to_owned() });
+        }
+    }
+
     pub fn notify(&self) {
         let _ = self.events.send(());
     }
