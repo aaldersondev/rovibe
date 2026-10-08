@@ -1,14 +1,21 @@
 :root {
-  --ink: #0e1a21;
-  --hull: #142630;
-  --deck: #1b323e;
-  --line: #2a4654;
-  --text: #e4edf0;
-  --muted: #8fa7b1;
-  --honey: #f2b33d;
-  --mint: #5fd3a6;
-  --coral: #ea6f61;
-  --violet: #a99cf5;
+  /* Graphite surfaces; color is kept for what it means. Violet is RoVibe
+     acting, cyan a live connection, green a success, orange a warning. */
+  --ink: #0d0f14;
+  --hull: #171a22;
+  --deck: #1e222d;
+  --line: #252936;
+  --line-strong: #363b4d;
+  --text: #e8eaf0;
+  --muted: #8a90a3;
+  --accent: #8b5cf6;
+  --accent-text: #c4b5fd;
+  --accent-soft: rgb(139 92 246 / 0.14);
+  --sync: #22d3ee;
+  --mint: #34d399;
+  --honey: #f59e0b;
+  --coral: #f87171;
+  --violet: #a78bfa;
 
   --ui: "Bricolage Grotesque Variable", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
@@ -56,14 +63,14 @@ button:hover {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--honey);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 button.primary {
-  background: var(--honey);
-  border-color: var(--honey);
-  color: #1d1503;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
   font-weight: 600;
 }
 
@@ -139,7 +146,7 @@ button:disabled {
 
 .project[aria-current="true"] {
   background: var(--deck);
-  box-shadow: inset 3px 0 0 var(--honey);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .project strong {
@@ -294,8 +301,8 @@ button.pill:disabled {
 }
 
 button.publish {
-  border-color: var(--honey);
-  color: var(--honey);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 button.start {
@@ -409,7 +416,7 @@ dialog.wide {
 }
 
 .changes li[aria-current] {
-  box-shadow: inset 3px 0 0 var(--honey);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .changes .file {
@@ -492,14 +499,14 @@ dialog.wide {
   grid-template-rows: auto 1fr;
   min-width: 0;
   min-height: 0;
-  background: #0a1319;
+  background: #0b0d12;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
 
 .pane:focus-within {
-  border-color: var(--honey);
+  border-color: var(--accent);
 }
 
 .pane[hidden] {
@@ -539,7 +546,7 @@ dialog.wide {
 }
 
 .cell.claude {
-  background: var(--honey);
+  background: var(--accent);
 }
 
 .cell.codex {
@@ -615,7 +622,7 @@ dialog.wide {
 }
 
 .composer textarea:focus-visible {
-  outline: 2px solid var(--honey);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -690,7 +697,7 @@ dialog {
 }
 
 dialog::backdrop {
-  background: rgb(5 12 16 / 0.7);
+  background: rgb(4 5 8 / 0.72);
 }
 
 dialog h2 {
@@ -788,7 +795,7 @@ dialog input[type="search"] {
 }
 
 .request.update {
-  border-color: var(--honey);
+  border-color: var(--accent);
 }
 
 .request span {
@@ -801,7 +808,7 @@ dialog input[type="search"] {
 
 .bank code {
   font: 12px var(--mono);
-  color: var(--honey);
+  color: var(--accent);
   user-select: all;
 }
 
@@ -876,7 +883,7 @@ dialog label.check {
 
 .tabs button[aria-current] {
   color: var(--text);
-  box-shadow: inset 0 -2px 0 var(--honey);
+  box-shadow: inset 0 -2px 0 var(--accent);
   border-radius: 0;
 }
 
@@ -947,7 +954,7 @@ dialog label.check {
 }
 
 .store small.warn {
-  color: var(--honey);
+  color: var(--accent);
 }
 
 .store button {
@@ -966,4 +973,459 @@ dialog label.check {
   background: var(--deck);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* ------------------------------------------------------------------
+   Design system: icons, controls, states
+   ------------------------------------------------------------------ */
+
+.icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--hull);
+  border-radius: 8px;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--deck);
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--deck);
+  border-color: transparent;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+button.primary:hover:not(:disabled) {
+  background: #7c4dee;
+  border-color: #7c4dee;
+}
+
+select {
+  border-radius: 8px;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+
+/* Rail */
+
+.rail {
+  background: var(--ink);
+}
+
+.brand {
+  font-size: 20px;
+}
+
+.project {
+  border: 1px solid transparent;
+  padding: 9px 10px;
+}
+
+.project:hover {
+  background: var(--hull);
+}
+
+.project[aria-current="true"] {
+  background: var(--accent-soft);
+  border-color: rgb(139 92 246 / 0.35);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.rail-head .add {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text);
+}
+
+.tool {
+  justify-content: flex-start;
+  gap: 12px;
+  color: var(--text);
+  border-radius: 8px;
+}
+
+.tool .icon {
+  color: var(--muted);
+}
+
+.tool:hover {
+  background: var(--hull);
+}
+
+.tool small {
+  margin-left: auto;
+}
+
+/* Bar: project context, then global actions, then the agents' launcher */
+
+.bar {
+  background: var(--ink);
+}
+
+.bar-row {
+  padding: 12px 16px;
+}
+
+.bar h1 {
+  font-size: 19px;
+}
+
+.bar .path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  direction: ltr;
+}
+
+.bar .path span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+
+.bar .path .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.pill {
+  padding: 6px 12px;
+  background: var(--hull);
+  color: var(--text);
+}
+
+.pill.sync {
+  border-color: rgb(34 211 238 / 0.4);
+}
+
+.pill.sync .dot.on {
+  background: var(--sync);
+  box-shadow: 0 0 0 3px rgb(34 211 238 / 0.15);
+}
+
+button.pill.accent {
+  border-color: rgb(139 92 246 / 0.55);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+button.publish {
+  border-color: rgb(245 158 11 / 0.6);
+  color: var(--honey);
+}
+
+button.publish:hover:not(:disabled) {
+  background: rgb(245 158 11 / 0.1);
+  border-color: var(--honey);
+}
+
+.bar-row.launch {
+  background: var(--hull);
+  border-top: 1px solid var(--line);
+  padding-block: 9px;
+}
+
+button.start {
+  background: var(--ink);
+  padding: 7px 14px;
+}
+
+button.start::before {
+  content: none;
+}
+
+button.start.claude {
+  border-color: rgb(139 92 246 / 0.6);
+  background: var(--accent-soft);
+}
+
+.icon.i-claude {
+  color: #f08a4b;
+  stroke-width: 2.6;
+}
+
+.icon.i-codex {
+  color: var(--text);
+}
+
+.icon.i-shell {
+  color: var(--mint);
+}
+
+.store small.warn,
+.request.update {
+  color: var(--honey);
+  border-color: var(--honey);
+}
+
+.request.update span {
+  color: var(--text);
+}
+
+/* Terminal panes */
+
+.grid {
+  gap: 10px;
+  padding: 10px;
+  background: var(--ink);
+}
+
+.pane {
+  border-radius: 10px;
+  border-color: var(--line);
+}
+
+.pane:focus-within {
+  border-color: rgb(139 92 246 / 0.7);
+}
+
+.pane-head {
+  padding: 7px 8px 7px 12px;
+  font-size: 13px;
+  gap: 9px;
+}
+
+.pane-head .agent,
+.chip .agent {
+  display: inline-flex;
+}
+
+.pane-head .agent .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.pane.dead .agent .icon,
+.pane.dormant .agent .icon {
+  color: var(--muted);
+}
+
+.pane-head button.quiet {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+/* One dot per agent, and one color per state: violet while it works, orange
+   when it waits for the user, green once it is done. */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-left: 4px;
+}
+
+.pane[data-status="working"] .status-dot {
+  background: var(--accent);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.pane[data-status="waiting"] .status-dot {
+  background: var(--honey);
+}
+
+.pane[data-status="idle"] .status-dot {
+  background: var(--mint);
+}
+
+.pane[data-status=""] .status-dot,
+.pane.dormant .status-dot {
+  display: none;
+}
+
+.pane[data-status="working"] .pane-head .state:first-of-type {
+  color: var(--accent-text);
+}
+
+.pane[data-status="waiting"] {
+  border-color: rgb(245 158 11 / 0.7);
+}
+
+.pane[data-status="waiting"] .pane-head .state:first-of-type {
+  color: var(--honey);
+}
+
+.project small.calls,
+.bar .summary.calls {
+  color: var(--honey);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot {
+    animation: none !important;
+  }
+}
+
+/* The command bar: who it goes to, then what to say */
+
+.composer {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  background: var(--ink);
+}
+
+.composer-to,
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-to {
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+.composer-to .label {
+  color: var(--muted);
+}
+
+.composer-row {
+  align-items: stretch;
+}
+
+.chip {
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: none;
+}
+
+.chip .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.chip[aria-pressed="true"] {
+  color: var(--text);
+  border-color: rgb(139 92 246 / 0.6);
+  background: var(--accent-soft);
+}
+
+.chip[aria-pressed="false"] .icon {
+  color: var(--muted);
+}
+
+.keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+kbd {
+  font: 11px var(--ui);
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  color: var(--text);
+  background: var(--hull);
+}
+
+.keys kbd:nth-of-type(2) {
+  margin-left: 10px;
+}
+
+.composer textarea {
+  background: var(--hull);
+  border-color: rgb(139 92 246 / 0.45);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14.5px;
+}
+
+.composer textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.composer-saved {
+  gap: 8px;
+}
+
+.composer-saved select,
+.composer-saved button,
+.composer-row > button {
+  height: 46px;
+  padding-inline: 14px;
+  border-radius: 10px;
+}
+
+.composer-saved select {
+  background: var(--hull);
+}
+
+/* Dialogs and toasts take the same surfaces */
+
+dialog {
+  background: var(--hull);
+  border-radius: 12px;
+}
+
+.toast {
+  background: var(--hull);
+}
+
+.empty h2 {
+  font-size: 24px;
+}
+
+.badges span {
+  border: 1px solid var(--line);
+  background: var(--hull);
+}
+
+/* Buttons are flex boxes now: the ones that hold a line of text keep it on
+   the left, and a hidden one stays hidden. */
+[hidden] {
+  display: none !important;
+}
+
+.project,
+.changes .file {
+  justify-content: flex-start;
+}
+
+.tool {
+  align-items: center;
+  white-space: nowrap;
+}
+
+.composer-saved select {
+  max-width: 30ch;
 }

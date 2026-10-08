@@ -111,6 +111,39 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
+/** Line icons, drawn on a 24-unit grid with the text color. */
+const ICONS = {
+  plus: "M5 12h14M12 5v14",
+  close: "M18 6 6 18M6 6l12 12",
+  expand: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7",
+  folder: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+  link: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+  changes: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2",
+  history: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7ZM14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8",
+  publish: "M12 13v8M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242M8 17l4-4 4 4",
+  claude: "M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4",
+  codex: "M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16zM8.5 10l3.5 2-3.5 2M13 14h3",
+  shell: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM7 9l3 3-3 3M12 15h5",
+  bank: "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16ZM3.3 7l8.7 5 8.7-5M12 22V12",
+  plugin: "M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z",
+  settings: "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4",
+  log: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+  save: "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7M7 3v4a1 1 0 0 0 1 1h7",
+  send: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
+} as const;
+
+function icon(name: keyof typeof ICONS) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  // Prefixed: several icon names are also the names of parts of the page.
+  svg.setAttribute("class", `icon i-${name}`);
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  shape.setAttribute("d", ICONS[name]);
+  svg.append(shape);
+  return svg;
+}
+
 async function api<T = { message?: string }>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -148,26 +181,26 @@ function socketUrl(path: string) {
 /** The sixteen terminal colors, tuned to stay readable on the pane's dark
  *  background: agents lean on them for diffs, warnings and prompts. */
 const TERMINAL_THEME = {
-  background: "#0a1319",
-  foreground: "#e4edf0",
-  cursor: "#f2b33d",
-  cursorAccent: "#0a1319",
-  selectionBackground: "#2a4654",
-  black: "#22323b",
-  red: "#ea6f61",
-  green: "#5fd3a6",
-  yellow: "#f2b33d",
-  blue: "#6cb0f0",
-  magenta: "#a99cf5",
-  cyan: "#5cc8d6",
-  white: "#c9d6db",
-  brightBlack: "#6f8792",
-  brightRed: "#ff9a8d",
-  brightGreen: "#8ee8c4",
-  brightYellow: "#ffd27a",
-  brightBlue: "#9ccbff",
-  brightMagenta: "#c8bfff",
-  brightCyan: "#8fe3ee",
+  background: "#0b0d12",
+  foreground: "#e8eaf0",
+  cursor: "#a78bfa",
+  cursorAccent: "#0b0d12",
+  selectionBackground: "#3b3270",
+  black: "#252936",
+  red: "#f87171",
+  green: "#34d399",
+  yellow: "#fbbf24",
+  blue: "#60a5fa",
+  magenta: "#a78bfa",
+  cyan: "#22d3ee",
+  white: "#cfd3de",
+  brightBlack: "#6b7285",
+  brightRed: "#fca5a5",
+  brightGreen: "#6ee7b7",
+  brightYellow: "#fcd34d",
+  brightBlue: "#93c5fd",
+  brightMagenta: "#c4b5fd",
+  brightCyan: "#67e8f9",
   brightWhite: "#ffffff",
 };
 
@@ -201,8 +234,9 @@ function createPane(session: Session): Pane {
     h(
       "header",
       { class: "pane-head" },
-      h("span", { class: `cell ${session.kind}` }),
+      h("span", { class: `agent ${session.kind}` }, icon(session.kind)),
       h("span", { class: "title" }, session.title),
+      h("span", { class: "status-dot" }),
       stateLabel,
       filesLabel,
       h("span", { class: "spacer" }),
@@ -217,9 +251,9 @@ function createPane(session: Session): Pane {
             terminal.focus();
           },
         },
-        "⤢",
+        icon("expand"),
       ),
-      h("button", { class: "quiet", title: "Fermer la session", onclick: () => closeSession(session.id) }, "✕"),
+      h("button", { class: "quiet", title: "Fermer la session", onclick: () => closeSession(session.id) }, icon("close")),
     ),
     body,
   );
@@ -1058,7 +1092,7 @@ const composer = h("form", { class: "composer" });
 const draft = h("textarea", {
   rows: 1,
   "aria-label": "Consigne",
-  placeholder: "Consigne pour les agents cochés — Entrée envoie, Maj+Entrée va à la ligne",
+  placeholder: "Écris une consigne pour les agents sélectionnés…",
 });
 
 /** The field is one line tall and grows with what is typed, up to a point. */
@@ -1147,46 +1181,95 @@ function renderComposer() {
   );
   const current = saved.findIndex((prompt) => prompt.text === draft.value.trim());
 
+  const live = (state?.sessions ?? []).filter((session) => session.project_id === projectId && !session.exited);
+  const chosen = new Set(targets().map((session) => session.id));
+  const everyone = live.length > 0 && chosen.size === live.length;
+  const choose = (ids: string[], on: boolean) => {
+    for (const id of ids) {
+      const pane = panes.get(id);
+      if (pane) pane.target.checked = on;
+    }
+    renderComposer();
+  };
+
   composer.replaceChildren(
     h(
       "div",
-      { class: "composer-saved" },
-      picker,
-      current >= 0
-        ? h(
-            "button",
-            {
-              type: "button",
-              class: "quiet",
-              title: "Supprimer cette consigne enregistrée",
-              onclick: () => {
-                if (confirm(`Supprimer la consigne « ${saved[current].name} » ?`)) {
-                  void savePrompts(projectId, saved.filter((_, index) => index !== current));
-                }
-              },
-            },
-            "Supprimer",
-          )
-        : h(
-            "button",
-            {
-              type: "button",
-              class: "quiet",
-              title: "Garder cette consigne dans le projet pour la réutiliser",
-              disabled: !draft.value.trim(),
-              onclick: () => {
-                const name = prompt("Nom de la consigne");
-                if (name?.trim()) void savePrompts(projectId, [...saved, { name: name.trim(), text: draft.value.trim() }]);
-              },
-            },
-            "Enregistrer",
-          ),
+      { class: "composer-to" },
+      h("span", { class: "label" }, "Pour"),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "chip",
+          "aria-pressed": String(everyone),
+          title: everyone ? "Ne plus viser personne" : "Viser toutes les sessions",
+          onclick: () => choose(live.map((session) => session.id), !everyone),
+        },
+        "Tous",
+      ),
+      ...live.map((session) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: "chip",
+            "aria-pressed": String(chosen.has(session.id)),
+            "data-status": session.status,
+            title: describeStatus(session),
+            onclick: () => choose([session.id], !chosen.has(session.id)),
+          },
+          h("span", { class: `agent ${session.kind}` }, icon(session.kind)),
+          session.title,
+        ),
+      ),
+      h("span", { class: "spacer" }),
+      h("span", { class: "keys" }, h("kbd", {}, "Entrée"), "envoyer", h("kbd", {}, "Maj"), "+", h("kbd", {}, "Entrée"), "nouvelle ligne"),
     ),
-    draft,
     h(
-      "button",
-      { class: "primary", type: "submit", disabled: count === 0 || !draft.value.trim() },
-      count === 0 ? "Aucun agent coché" : count === 1 ? "Envoyer à 1 agent" : `Envoyer aux ${count} agents`,
+      "div",
+      { class: "composer-row" },
+      h(
+        "div",
+        { class: "composer-saved" },
+        picker,
+        current >= 0
+          ? h(
+              "button",
+              {
+                type: "button",
+                title: "Supprimer cette consigne enregistrée",
+                onclick: () => {
+                  if (confirm(`Supprimer la consigne « ${saved[current].name} » ?`)) {
+                    void savePrompts(projectId, saved.filter((_, index) => index !== current));
+                  }
+                },
+              },
+              icon("close"),
+              "Supprimer",
+            )
+          : h(
+              "button",
+              {
+                type: "button",
+                title: "Garder cette consigne dans le projet pour la réutiliser",
+                disabled: !draft.value.trim(),
+                onclick: () => {
+                  const name = prompt("Nom de la consigne");
+                  if (name?.trim()) void savePrompts(projectId, [...saved, { name: name.trim(), text: draft.value.trim() }]);
+                },
+              },
+              icon("save"),
+              "Enregistrer",
+            ),
+      ),
+      draft,
+      h(
+        "button",
+        { class: "primary", type: "submit", disabled: count === 0 || !draft.value.trim() },
+        icon("send"),
+        count === 0 ? "Aucun destinataire" : count === 1 ? "Envoyer à 1 agent" : `Envoyer aux ${count} agents`,
+      ),
     ),
   );
   fitDraft();
@@ -1241,10 +1324,10 @@ function renderRail(current: State) {
   const logo = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   logo.setAttribute("viewBox", "0 0 26 26");
   logo.innerHTML =
-    '<path fill="#f2b33d" d="M13 1l5 3v6l-5 3-5-3V4z"/><path fill="#5fd3a6" d="M6.5 12.5l5 3v6l-5 3-5-3v-6z"/><path fill="#a99cf5" d="M19.5 12.5l5 3v6l-5 3-5-3v-6z"/>';
+    '<path fill="#a78bfa" d="M13 1l5 3v6l-5 3-5-3V4z"/><path fill="#8b5cf6" d="M6.5 12.5l5 3v6l-5 3-5-3v-6z"/><path fill="#6d3fe0" d="M19.5 12.5l5 3v6l-5 3-5-3v-6z"/>';
 
-  const tool = (label: string, hint: string, action: () => void, note = "") =>
-    h("button", { class: "tool", title: hint, onclick: action }, h("span", {}, label), note && h("small", {}, note));
+  const tool = (glyph: keyof typeof ICONS, label: string, hint: string, action: () => void, note = "") =>
+    h("button", { class: "tool", title: hint, onclick: action }, icon(glyph), h("span", {}, label), note && h("small", {}, note));
 
   rail.replaceChildren(
     h("div", { class: "brand", title: "Vibe Code Together in Roblox Studio." }, logo, "RoVibe"),
@@ -1252,7 +1335,7 @@ function renderRail(current: State) {
       "div",
       { class: "rail-head" },
       h("span", {}, "Projets"),
-      h("button", { class: "quiet add", title: "Nouveau projet", "aria-label": "Nouveau projet", onclick: openProjectDialog }, "+"),
+      h("button", { class: "quiet add", title: "Nouveau projet", "aria-label": "Nouveau projet", onclick: openProjectDialog }, icon("plus")),
     ),
     h(
       "nav",
@@ -1298,16 +1381,17 @@ function renderRail(current: State) {
       !(current.checkers.selene && current.checkers.luau_lsp) &&
         h("div", { class: "notice" }, "Vérification du code incomplète : lance scripts\\get-tools.ps1 pour installer selene et luau-lsp."),
       h("div", { class: "rail-head" }, h("span", {}, "Outils")),
-      tool("Banque d'assets", "Modèles réutilisables et Creator Store", () => run(openBankDialog)),
+      tool("bank", "Banque d'assets", "Modèles réutilisables et Creator Store", () => run(openBankDialog)),
       current.tools.sync &&
         tool(
+          "plugin",
           "Plugin Studio",
           "Copie RoVibeStudio.rbxm dans le dossier Plugins de Roblox Studio",
           () => run(() => api("/api/plugin/install", "POST")),
           current.plugin_installed ? "mettre à jour" : "à installer",
         ),
-      tool("Réglages", "Modèles par défaut, dossiers, réseau des agents isolés", () => run(openSettingsDialog)),
-      tool("Journal", "Ce que l'app a fait", () => run(openLogDialog)),
+      tool("settings", "Réglages", "Modèles par défaut, dossiers, réseau des agents isolés", () => run(openSettingsDialog)),
+      tool("log", "Journal", "Ce que l'app a fait", () => run(openLogDialog)),
       h("div", { class: "version" }, `RoVibe ${current.version}`),
     ),
   );
@@ -1379,7 +1463,7 @@ function renderBar(current: State, project: Project) {
         "div",
         { class: "identity" },
         h("h1", {}, project.name),
-        h("span", { class: "path", title: project.path }, project.path),
+        h("span", { class: "path", title: project.path }, icon("folder"), h("span", {}, project.path)),
       ),
       h(
         "div",
@@ -1399,7 +1483,7 @@ function renderBar(current: State, project: Project) {
         h(
           "button",
           {
-            class: "pill",
+            class: project.sync_running ? "pill sync" : "pill",
             title: project.sync_running ? "Arrêter le serveur de synchro" : "Démarrer le serveur de synchro",
             onclick: () => sync(project.sync_running ? "stop" : "start"),
           },
@@ -1409,11 +1493,12 @@ function renderBar(current: State, project: Project) {
         h(
           "button",
           {
-            class: "pill",
+            class: "pill accent",
             disabled: linked.length === 0,
             title: "Connecte Studio au serveur de synchro du projet",
             onclick: () => sync("connect"),
           },
+          icon("link"),
           "Connecter",
         ),
       ),
@@ -1424,9 +1509,10 @@ function renderBar(current: State, project: Project) {
         h(
           "button",
           { title: "Ce que les agents ont modifié depuis ta dernière relecture", onclick: () => run(() => openChangesDialog(project)) },
+          icon("changes"),
           "Changements",
         ),
-        h("button", { title: "Points de sauvegarde et retour en arrière", onclick: () => run(() => openHistoryDialog(project)) }, "Historique"),
+        h("button", { title: "Points de sauvegarde et retour en arrière", onclick: () => run(() => openHistoryDialog(project)) }, icon("history"), "Historique"),
         h(
           "button",
           {
@@ -1439,6 +1525,7 @@ function renderBar(current: State, project: Project) {
               }
             },
           },
+          icon("publish"),
           "Publier",
         ),
       ),
@@ -1453,16 +1540,16 @@ function renderBar(current: State, project: Project) {
         h(
           "button",
           { class: "start claude", disabled: !current.tools.claude, title: current.tools.claude ? "Nouvelle session Claude Code" : "claude introuvable dans le PATH", onclick: () => newSession("claude") },
-          h("span", { class: "cell claude" }),
+          icon("claude"),
           "Claude Code",
         ),
         h(
           "button",
           { class: "start", disabled: !current.tools.codex, title: current.tools.codex ? "Nouvelle session Codex" : "codex introuvable dans le PATH", onclick: () => newSession("codex") },
-          h("span", { class: "cell codex" }),
+          icon("codex"),
           "Codex",
         ),
-        h("button", { class: "start", title: "Un terminal dans le dossier du projet", onclick: () => newSession("shell") }, h("span", { class: "cell shell" }), "Terminal"),
+        h("button", { class: "start", title: "Un terminal dans le dossier du projet", onclick: () => newSession("shell") }, icon("shell"), "Terminal"),
       ),
       h("span", { class: "label" }, "avec"),
       h(
@@ -1545,7 +1632,7 @@ function renderPanes(current: State, project: Project | undefined) {
         h(
           "header",
           { class: "pane-head" },
-          h("span", { class: "cell" }),
+          h("span", { class: "agent" }, icon("claude")),
           h("span", { class: "title" }, session.title),
           h("span", { class: "state" }, session.isolated ? "interrompue, isolée" : "interrompue"),
         ),
