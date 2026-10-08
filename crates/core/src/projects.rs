@@ -119,7 +119,11 @@ pub fn create(
 
     let dir = match path.filter(|path| !path.trim().is_empty()) {
         Some(path) => PathBuf::from(path.trim()),
-        None => default_root().join(slug(name)),
+        None => {
+            let chosen = state.settings.lock().unwrap().projects_dir.trim().to_owned();
+            let root = if chosen.is_empty() { default_root() } else { PathBuf::from(chosen) };
+            root.join(slug(name))
+        }
     };
 
     if state

@@ -329,6 +329,7 @@ pub struct NewSession {
     skip_permissions: bool,
     #[serde(default)]
     isolated: bool,
+    model: Option<String>,
 }
 
 pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSession>) -> ApiResult {
@@ -358,6 +359,7 @@ pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSes
         in_wsl,
         title: None,
         resume: None,
+        model: body.model,
     };
     let info = pty::spawn(&state, &project, launch).map_err(fail)?;
     Ok(Json(json!(info)))
@@ -442,6 +444,95 @@ pub async fn answer_approval(
     let _ = approval.answer.send(body.allow);
     state.notify();
     Ok(Json(json!({})))
+}
+
+pub async fn get_settings(State(state): State<Shared>) -> Json<Value> {
+    Json(json!(*state.settings.lock().unwrap()))
+}
+
+pub async fn put_settings(
+    State(state): State<Shared>,
+    Json(settings): Json<crate::settings::Settings>,
+) -> ApiResult {
+    crate::input::check_keys(&settings.publish_keys())
+        .map_err(|error| fail(format!("Raccourci de publication : {error}")))?;
+    let folder = settings.projects_dir.trim();
+    if !folder.is_empty() && !std::path::Path::new(folder).is_absolute() {
+        return Err(fail("Le dossier des projets doit être un chemin complet"));
+    }
+    settings.save(&state.data_dir).map_err(|error| fail(error.to_string()))?;
+    *state.settings.lock().unwrap() = settings;
+    Ok(Json(json!({ "message": "Réglages enregistrés." })))
+}
+
+/// Who, among the agents of this run, changed a file.
+fn authors(state: &Shared, project_id: &str, path: &str) -> Vec<String> {
+    let mut titles: Vec<String> = state
+        .sessions
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|session| session.info.project_id == project_id)
+        .filter(|session| {
+            session.touched.lock().unwrap().iter().any(|touched| touched.eq_ignore_ascii_case(path))
+        })
+        .map(|session| session.info.title.clone())
+        .collect();
+    titles.sort();
+    titles
+}
+
+pub async fn project_changes(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    let project = state.project(&id).ok_or_else(|| fail("Projet inconnu"))?;
+    let changes = git::changes(&project.path).await.map_err(fail)?;
+    let listed: Vec<Value> = changes
+        .iter()
+        .map(|change| {
+            let mut entry = json!(change);
+            entry["agents"] = json!(authors(&state, &id, &change.path));
+            entry
+        })
+        .collect();
+    Ok(Json(json!({ "changes": listed })))
+}
+
+#[derive(Deserialize)]
+pub struct DiffQuery {
+    path: String,
+}
+
+pub async fn change_diff(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DiffQuery>,
+) -> ApiResult {
+    let project = state.project(&id).ok_or_else(|| fail("Projet inconnu"))?;
+    let diff = git::diff(&project.path, &query.path).await.map_err(fail)?;
+    Ok(Json(json!({ "diff": diff })))
+}
+
+#[derive(Deserialize)]
+pub struct Review {
+    action: String,
+    path: Option<String>,
+}
+
+pub async fn review_changes(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<Review>,
+) -> ApiResult {
+    let project = state.project(&id).ok_or_else(|| fail("Projet inconnu"))?;
+    let message = match body.action.as_str() {
+        "accept" => git::accept(&project.path).await.map_err(fail)?,
+        "revert" => {
+            let path = body.path.ok_or_else(|| fail("`path` est requis"))?;
+            crate::log::info(format!("« {} » : {path} remis à son état relu", project.name));
+            git::revert(&project.path, &path).await.map_err(fail)?
+        }
+        _ => return Err(fail("Action inconnue")),
+    };
+    Ok(Json(json!({ "message": message })))
 }
 
 pub async fn read_log() -> Json<Value> {

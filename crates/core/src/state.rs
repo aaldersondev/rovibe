@@ -96,6 +96,7 @@ pub struct AppState {
     pub syncs: Mutex<HashMap<String, SyncProc>>,
     pub logs: Mutex<LogBuffer>,
     pub locks: Mutex<Vec<Lock>>,
+    pub settings: Mutex<crate::settings::Settings>,
     /// Agent sessions that were open when the app last closed, waiting for
     /// the user to resume or dismiss them.
     pub dormant: Mutex<Vec<crate::agents::Saved>>,
@@ -125,6 +126,7 @@ impl AppState {
             version,
             port,
             token,
+            settings: Mutex::new(crate::settings::Settings::load(&data_dir)),
             data_dir,
             projects: Mutex::new(projects),
             sessions: Mutex::default(),

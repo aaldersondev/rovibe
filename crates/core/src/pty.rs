@@ -23,12 +23,14 @@ use crate::{
 const SCROLLBACK_BYTES: usize = 512 * 1024;
 
 /// Events Claude Code reports back to the app. PreToolUse is limited to the
-/// tools that write files: it is the one hook that can refuse an action.
+/// tools that can write files, edits and shell commands alike: it is the one
+/// hook that can refuse an action.
 const HOOK_EVENTS: &[(&str, Option<&str>)] = &[
     ("SessionStart", None),
     ("UserPromptSubmit", None),
-    ("PreToolUse", Some("Edit|Write|MultiEdit|NotebookEdit")),
+    ("PreToolUse", Some("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")),
     ("PostToolUse", Some("*")),
+    ("PermissionRequest", None),
     ("Notification", None),
     ("Stop", None),
 ];
@@ -73,6 +75,8 @@ pub struct Launch {
     pub skip_permissions: bool,
     pub title: Option<String>,
     pub resume: Option<String>,
+    /// Model for this session; `None` falls back to the user's setting.
+    pub model: Option<String>,
     /// Confine the agent to its project.
     pub isolated: bool,
     /// The agent runs inside the isolation distribution, which
@@ -91,9 +95,17 @@ pub struct Session {
     /// conversation on disk and can't be resumed.
     pub used: AtomicBool,
     pub status: Mutex<Status>,
+    /// Every project file this agent changed, for the review of changes.
+    pub touched: Mutex<std::collections::BTreeSet<String>>,
+    /// Files that already had changes when the agent's current shell command
+    /// started: what is dirty afterwards and wasn't before is its doing.
+    pub shell_before: Mutex<Option<std::collections::HashSet<String>>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    /// Everything the agent started, so that closing the session leaves
+    /// nothing running behind it.
+    family: crate::jobs::Family,
     scrollback: Mutex<Vec<u8>>,
     output: broadcast::Sender<Bytes>,
 }
@@ -123,6 +135,9 @@ impl Session {
     }
 
     pub fn kill(&self) {
+        // An agent is rarely one process: Codex runs under a launcher, and
+        // either agent may have commands of its own still going.
+        self.family.terminate();
         let _ = self.killer.lock().unwrap().kill();
     }
 
@@ -183,6 +198,20 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     std::fs::write(path, text).map_err(|error| error.to_string())
 }
 
+fn model_for(state: &Shared, launch: &Launch) -> Option<String> {
+    let settings = state.settings.lock().unwrap();
+    let default = match launch.kind {
+        Kind::Claude => &settings.claude_model,
+        Kind::Codex => &settings.codex_model,
+        Kind::Shell => return None,
+    };
+    launch
+        .model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| (!default.trim().is_empty()).then(|| default.trim().to_owned()))
+}
+
 /// Where the agent finds the app. The same address everywhere: inside WSL it
 /// is the relay's, which forwards to the app.
 fn app_address(state: &Shared) -> String {
@@ -241,6 +270,50 @@ fn write_hook_settings(state: &Shared, session_id: &str, launch: &Launch) -> Res
     Ok(shown)
 }
 
+/// Marks a hooks file as ours, so that a project's own is never overwritten.
+const CODEX_HOOK_TARGET: &str = "%ESSAIM_HOOK%";
+
+/// Codex reads its hooks from the project, one file for every session. The
+/// address each session reports to therefore comes from its environment,
+/// which also keeps the app's token out of a file that may be committed.
+fn write_codex_hooks(project: &Project) {
+    let path = project.path.join(".codex").join("hooks.json");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if !existing.contains(CODEX_HOOK_TARGET) {
+            crate::log::warn(format!(
+                "{} existe déjà : Codex n'enverra ni état ni verrous pour ce projet",
+                path.display()
+            ));
+            return;
+        }
+    }
+
+    // Codex hands this line to the user's shell, PowerShell as a rule. It is
+    // written without a single quote character: nested quotes reached curl
+    // mangled and the events were silently never sent. cmd.exe is what
+    // expands the variable, and `-T -` reads the event from standard input
+    // without the `@` that PowerShell would take for its own syntax.
+    let command = format!(
+        "cmd.exe /d /c curl -s --max-time 3 -X POST -H Content-Type:application/json -T - {CODEX_HOOK_TARGET}"
+    );
+    let mut hooks = serde_json::Map::new();
+    for (event, matcher) in [
+        ("SessionStart", None),
+        ("UserPromptSubmit", None),
+        ("PreToolUse", Some("Bash|apply_patch")),
+        ("PostToolUse", Some("*")),
+        ("PermissionRequest", None),
+        ("Stop", None),
+    ] {
+        let mut entry = json!({ "hooks": [{ "type": "command", "command": command }] });
+        if let Some(matcher) = matcher {
+            entry["matcher"] = json!(matcher);
+        }
+        hooks.insert(event.to_owned(), json!([entry]));
+    }
+    let _ = write_json(&path, &json!({ "hooks": hooks }));
+}
+
 fn build_command(
     state: &Shared,
     project: &Project,
@@ -273,13 +346,33 @@ fn build_command(
                 command.arg(if launch.resume.is_some() { "--resume" } else { "--session-id" });
                 command.arg(id);
             }
+            if let Some(model) = model_for(state, launch) {
+                command.args(["--model", &model]);
+            }
             if launch.skip_permissions {
                 command.arg("--dangerously-skip-permissions");
             }
             command
         }
         Kind::Codex => {
+            // Through npm's own launcher: started directly, the executable
+            // inside the package draws an empty screen. None of the
+            // arguments below needs quoting, which is all cmd.exe gets wrong.
             let mut command = command_for(&locate("codex")?);
+            if let Some(id) = &launch.resume {
+                command.args(["resume", id]);
+            }
+            write_codex_hooks(project);
+            // Codex asks the user to review these hooks the first time it
+            // meets them in a project. That question is left to them: the
+            // flag that skips it also leaves the session's screen empty.
+            command.env(
+                "ESSAIM_HOOK",
+                format!("{}/hook/{}/{}", app_address(state), state.token, session_id),
+            );
+            if let Some(model) = model_for(state, launch) {
+                command.args(["--model", &model]);
+            }
             // Unquoted on purpose: codex falls back to a plain string when
             // the value isn't valid TOML, and quotes don't survive cmd.exe.
             command.arg("-c");
@@ -349,8 +442,10 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         .slave
         .spawn_command(command)
         .map_err(|error| error.to_string())?;
+    let family = crate::jobs::Family::new();
     if let Some(process_id) = child.process_id() {
         crate::jobs::adopt(process_id);
+        family.adopt(process_id);
     }
     // The child holds its own handle; keeping ours open would stop the reader
     // from ever seeing the end of the stream.
@@ -382,14 +477,17 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         isolated: launch.isolated,
         agent_id: Mutex::new(agent_id),
         used: AtomicBool::new(launch.resume.is_some()),
+        touched: Mutex::default(),
+        shell_before: Mutex::default(),
         status: Mutex::new(Status {
-            state: if launch.kind == Kind::Claude { "starting" } else { "" },
+            state: if launch.kind == Kind::Shell { "" } else { "starting" },
             detail: String::new(),
             since: Instant::now(),
         }),
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         killer: Mutex::new(child.clone_killer()),
+        family,
         scrollback: Mutex::new(Vec::new()),
         output: broadcast::channel(1024).0,
     });

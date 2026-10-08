@@ -261,6 +261,72 @@ dialog.wide {
   width: min(900px, 94vw);
 }
 
+.foot-links {
+  display: flex;
+  justify-content: space-between;
+}
+
+.rail-foot .foot-links button {
+  width: auto;
+}
+
+.review {
+  display: grid;
+  grid-template-columns: minmax(220px, 34%) 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.review .bank,
+.review .log {
+  margin: 0;
+  max-height: 58vh;
+}
+
+.changes li[aria-current] {
+  box-shadow: inset 3px 0 0 var(--honey);
+}
+
+.changes .file {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.changes .file strong {
+  color: var(--text);
+}
+
+.diff .plus {
+  color: var(--mint);
+}
+
+.diff .minus {
+  color: var(--coral);
+}
+
+.diff .hunk {
+  color: var(--violet);
+}
+
+.diff .meta {
+  color: var(--muted);
+}
+
+.bar select {
+  background: var(--deck);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+@media (max-width: 720px) {
+  .review {
+    grid-template-columns: 1fr;
+  }
+}
+
 .log {
   max-height: 56vh;
   overflow: auto;

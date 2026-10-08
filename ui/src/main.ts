@@ -85,6 +85,8 @@ let state: State | null = null;
 let selected = localStorage.getItem("essaim.project");
 let skipPermissions = localStorage.getItem("essaim.skip") === "1";
 let isolated = localStorage.getItem("essaim.isolated") === "1";
+/** Model for the next Claude Code session; empty follows the settings. */
+let model = localStorage.getItem("essaim.model") ?? "";
 
 type Child = Node | string | null | false;
 
@@ -264,6 +266,7 @@ async function newSession(kind: Kind) {
       kind,
       skip_permissions: skipPermissions,
       isolated,
+      model: kind === "claude" && model ? model : null,
     });
     created = session.id;
   });
@@ -414,6 +417,180 @@ interface BankAsset {
   thumb: boolean;
 }
 
+interface Change {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  added: number;
+  deleted: number;
+  agents: string[];
+}
+
+const CHANGE_LABELS = { added: "nouveau", modified: "modifié", deleted: "supprimé" };
+
+function widen() {
+  dialog.classList.add("wide");
+  dialog.addEventListener("close", () => dialog.classList.remove("wide"), { once: true });
+}
+
+async function openChangesDialog(project: Project) {
+  const { changes } = await api<{ changes: Change[] }>(`/api/projects/${project.id}/changes`);
+  const view = h("pre", { class: "log diff", tabindex: 0 });
+  const list = h("ul", { class: "bank changes" });
+  let shown: string | null = null;
+
+  const show = async (path: string) => {
+    shown = path;
+    for (const item of list.children) item.toggleAttribute("aria-current", (item as HTMLElement).dataset.path === path);
+    try {
+      const { diff } = await api<{ diff: string }>(`/api/projects/${project.id}/changes/diff?path=${encodeURIComponent(path)}`);
+      // Lines are colored by what they do to the file, the way a diff reads.
+      view.replaceChildren(
+        ...diff.split("\n").map((line) => {
+          const kind = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ")
+            ? "meta"
+            : line.startsWith("@@")
+              ? "hunk"
+              : line.startsWith("+")
+                ? "plus"
+                : line.startsWith("-")
+                  ? "minus"
+                  : "";
+          return h("span", kind ? { class: kind } : {}, line + "\n");
+        }),
+      );
+      view.scrollTop = 0;
+    } catch (error) {
+      view.textContent = (error as Error).message;
+    }
+  };
+
+  const review = (body: object) =>
+    run(async () => {
+      const result = await api(`/api/projects/${project.id}/changes`, "POST", body);
+      dialog.close();
+      return result;
+    });
+
+  list.replaceChildren(
+    ...changes.map((change) =>
+      h(
+        "li",
+        { "data-path": change.path },
+        h(
+          "button",
+          { class: "quiet file", onclick: () => show(change.path) },
+          h("strong", {}, change.path),
+          h(
+            "small",
+            {},
+            [
+              CHANGE_LABELS[change.status],
+              `+${change.added} −${change.deleted}`,
+              change.agents.length ? change.agents.join(", ") : "auteur inconnu (session fermée ou modification à la main)",
+            ].join(", "),
+          ),
+        ),
+        h(
+          "button",
+          {
+            class: "quiet",
+            title: "Remet ce fichier dans l'état de ta dernière relecture",
+            onclick: () => {
+              const what = change.status === "added" ? "Supprimer ce nouveau fichier" : "Annuler les changements de";
+              if (confirm(`${what} ${change.path} ?`)) void review({ action: "revert", path: change.path });
+            },
+          },
+          "Annuler",
+        ),
+      ),
+    ),
+  );
+
+  dialog.replaceChildren(
+    h("h2", {}, "Changements"),
+    h(
+      "p",
+      { class: "notice" },
+      changes.length === 0
+        ? "Rien n'a changé depuis ta dernière relecture."
+        : `${changes.length} fichier(s) modifié(s) depuis ta dernière relecture, commités ou non par les agents.`,
+    ),
+    changes.length > 0 ? h("div", { class: "review" }, list, view) : "",
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { onclick: () => dialog.close() }, "Fermer"),
+      h(
+        "button",
+        {
+          class: "primary",
+          disabled: changes.length === 0,
+          title: "Crée un point de sauvegarde et repart de cet état pour la prochaine relecture",
+          onclick: () => review({ action: "accept" }),
+        },
+        "Tout accepter",
+      ),
+    ),
+  );
+  widen();
+  dialog.showModal();
+  if (changes[0]) void show(changes[0].path);
+  void shown;
+}
+
+interface Settings {
+  claude_model: string;
+  codex_model: string;
+  projects_dir: string;
+  publish_shortcut: string;
+}
+
+async function openSettingsDialog() {
+  const settings = await api<Settings>("/api/settings");
+  const field = (key: keyof Settings, placeholder: string) =>
+    h("input", { name: key, value: settings[key], placeholder, autocomplete: "off" });
+  const fields = {
+    claude_model: field("claude_model", "Celui de Claude Code (ex. opus, sonnet, haiku)"),
+    codex_model: field("codex_model", "Celui de Codex"),
+    projects_dir: field("projects_dir", "Documents\\Essaim"),
+    publish_shortcut: field("publish_shortcut", "alt+p"),
+  };
+
+  dialog.replaceChildren(
+    h(
+      "form",
+      {
+        onsubmit: (event: Event) => {
+          event.preventDefault();
+          void run(async () => {
+            const body = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value.trim()]));
+            const result = await api("/api/settings", "PUT", body);
+            dialog.close();
+            return result;
+          });
+        },
+      },
+      h("h2", {}, "Réglages"),
+      h("label", {}, h("span", {}, "Modèle par défaut des sessions Claude Code"), fields.claude_model),
+      h("label", {}, h("span", {}, "Modèle par défaut des sessions Codex"), fields.codex_model),
+      h("label", {}, h("span", {}, "Dossier où créer les nouveaux projets (chemin complet)"), fields.projects_dir),
+      h(
+        "label",
+        {},
+        h("span", {}, "Raccourci « Publier sur Roblox » de Studio, si tu l'as changé. Touches séparées par +."),
+        fields.publish_shortcut,
+      ),
+      h(
+        "div",
+        { class: "actions" },
+        h("button", { type: "button", onclick: () => dialog.close() }, "Annuler"),
+        h("button", { class: "primary", type: "submit" }, "Enregistrer"),
+      ),
+    ),
+  );
+  dialog.showModal();
+}
+
 async function openLogDialog() {
   const log = await api<{ path: string | null; lines: string[] }>("/api/log");
   const text = h("pre", { class: "log", tabindex: 0 }, log.lines.join("\n") || "Le journal est vide.");
@@ -424,8 +601,7 @@ async function openLogDialog() {
     h("p", { class: "notice" }, `Fichier : ${log.path ?? "indisponible"}`),
     h("div", { class: "actions" }, h("button", { onclick: () => dialog.close() }, "Fermer")),
   );
-  dialog.classList.add("wide");
-  dialog.addEventListener("close", () => dialog.classList.remove("wide"), { once: true });
+  widen();
   dialog.showModal();
   text.scrollTop = text.scrollHeight;
 }
@@ -801,7 +977,12 @@ function renderRail(current: State) {
           current.plugin_installed ? "Mettre à jour le plugin Studio" : "Installer le plugin Studio",
         ),
       h("button", { onclick: () => run(openBankDialog) }, "Banque d'assets"),
-      h("button", { class: "quiet", onclick: () => run(openLogDialog) }, "Journal"),
+      h(
+        "div",
+        { class: "foot-links" },
+        h("button", { class: "quiet", onclick: () => run(openSettingsDialog) }, "Réglages"),
+        h("button", { class: "quiet", onclick: () => run(openLogDialog) }, "Journal"),
+      ),
       h("button", { class: "primary", onclick: openProjectDialog }, "Nouveau projet"),
     ),
   );
@@ -879,6 +1060,11 @@ function renderBar(current: State, project: Project) {
       { disabled: linked.length === 0, title: "Connecte Studio au serveur de synchro du projet", onclick: () => sync("connect") },
       "Connecter Studio",
     ),
+    h(
+      "button",
+      { title: "Ce que les agents ont modifié depuis ta dernière relecture", onclick: () => run(() => openChangesDialog(project)) },
+      "Changements",
+    ),
     h("button", { title: "Points de sauvegarde et retour en arrière", onclick: () => run(() => openHistoryDialog(project)) }, "Historique"),
     h(
       "button",
@@ -924,6 +1110,22 @@ function renderBar(current: State, project: Project) {
         },
       }),
       "Isolé",
+    ),
+    h(
+      "select",
+      {
+        title: "Modèle de la prochaine session Claude Code",
+        onchange: (event: Event) => {
+          model = (event.target as HTMLSelectElement).value;
+          localStorage.setItem("essaim.model", model);
+        },
+      },
+      ...[
+        ["", "Modèle : réglage"],
+        ["opus", "Modèle : Opus"],
+        ["sonnet", "Modèle : Sonnet"],
+        ["haiku", "Modèle : Haiku"],
+      ].map(([value, label]) => h("option", { value, selected: value === model }, label)),
     ),
     h("button", { disabled: !current.tools.claude, title: current.tools.claude ? "" : "claude introuvable dans le PATH", onclick: () => newSession("claude") }, "+ Claude Code"),
     h("button", { disabled: !current.tools.codex, title: current.tools.codex ? "" : "codex introuvable dans le PATH", onclick: () => newSession("codex") }, "+ Codex"),

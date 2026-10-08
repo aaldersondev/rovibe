@@ -14,7 +14,7 @@ mod win {
         System::{
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
@@ -41,12 +41,44 @@ mod win {
         })
     }
 
-    pub fn adopt(process_id: u32) {
+    fn assign(job: isize, process_id: u32) {
         unsafe {
             let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, process_id);
             if !process.is_null() {
-                AssignProcessToJobObject(job() as _, process);
+                AssignProcessToJobObject(job as _, process);
                 CloseHandle(process);
+            }
+        }
+    }
+
+    pub fn adopt(process_id: u32) {
+        assign(job(), process_id);
+    }
+
+    /// A job of its own for one session, nested in the app's: ending it ends
+    /// the agent and every process the agent started, and nothing else.
+    pub struct Family(isize);
+
+    impl Family {
+        pub fn new() -> Self {
+            Self(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) } as isize)
+        }
+
+        pub fn adopt(&self, process_id: u32) {
+            assign(self.0, process_id);
+        }
+
+        pub fn terminate(&self) {
+            unsafe {
+                TerminateJobObject(self.0 as _, 1);
+            }
+        }
+    }
+
+    impl Drop for Family {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0 as _);
             }
         }
     }
@@ -59,5 +91,20 @@ pub fn adopt(process_id: u32) {
     win::adopt(process_id);
 }
 
+#[cfg(windows)]
+pub use win::Family;
+
 #[cfg(not(windows))]
 pub fn adopt(_process_id: u32) {}
+
+#[cfg(not(windows))]
+pub struct Family;
+
+#[cfg(not(windows))]
+impl Family {
+    pub fn new() -> Self {
+        Self
+    }
+    pub fn adopt(&self, _process_id: u32) {}
+    pub fn terminate(&self) {}
+}

@@ -569,8 +569,9 @@ pub async fn publish(state: &Shared, project: &Project) -> Result<String, String
     // proof of a publication that doesn't depend on reading Studio's screen.
     let before = place_updated(place_id).await;
 
+    let keys = state.settings.lock().unwrap().publish_keys();
     let dialog = tokio::task::spawn_blocking(move || {
-        let shortcut = [input::Step::Keys { keys: vec!["alt".into(), "p".into()], hold_ms: 80 }];
+        let shortcut = [input::Step::Keys { keys, hold_ms: 80 }];
         input::run(&place, size, &shortcut)?;
         std::thread::sleep(Duration::from_millis(1200));
         input::dialog_open(&place)

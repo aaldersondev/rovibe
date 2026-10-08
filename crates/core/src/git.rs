@@ -15,6 +15,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// sync server would then push that as a change to Studio.
 const ATTRIBUTES: &str = "* -text\n";
 
+const FIRST_COMMIT: &str = "Création du projet";
+const REVIEWED: &str = "refs/essaim/reviewed";
+
 const IGNORE: &str = "# Places Studio : binaires, à enregistrer depuis Studio\n*.rbxl\n*.rbxlx\n*.rbxl.lock\n*.rbxlx.lock\n";
 
 #[derive(Serialize)]
@@ -81,7 +84,147 @@ pub async fn ensure_repo(dir: &Path) -> Result<(), String> {
         }
     }
     git(dir, &["add", "-A"]).await?;
-    commit(dir, "Création du projet").await
+    commit(dir, FIRST_COMMIT).await?;
+    git(dir, &["update-ref", REVIEWED, "HEAD"]).await.map(|_| ())
+}
+
+/// Paths with uncommitted changes, relative to the project. `None` when the
+/// project isn't a repository of its own.
+pub async fn dirty_paths(dir: &Path) -> Option<std::collections::HashSet<String>> {
+    if !is_root(dir) {
+        return None;
+    }
+    let status = git(dir, &["status", "--porcelain", "-uall"]).await.ok()?;
+    Some(
+        status
+            .lines()
+            // `XY path`, or `XY old -> new` for a rename.
+            .filter_map(|line| line.get(3..))
+            .map(|path| path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"').to_owned())
+            .collect(),
+    )
+}
+
+#[derive(Serialize)]
+pub struct Change {
+    pub path: String,
+    /// `added`, `modified` or `deleted`.
+    pub status: &'static str,
+    pub added: u64,
+    pub deleted: u64,
+}
+
+/// The state the user last looked at, moved forward when they accept the
+/// changes. Agents commit their own work, so comparing with the last commit
+/// would show nothing: the review is against this mark instead.
+async fn reviewed(dir: &Path) -> Result<(), String> {
+    if !is_root(dir) {
+        return Err("Ce projet n'a pas son propre dépôt git".into());
+    }
+    if git(dir, &["rev-parse", "--verify", "--quiet", REVIEWED]).await.is_ok() {
+        return Ok(());
+    }
+    // A project created before this mark existed starts from its creation;
+    // a repository the user brought along starts from where it is now.
+    let root = git(dir, &["rev-list", "--max-parents=0", "HEAD"]).await?;
+    let root = root.lines().last().unwrap_or("HEAD").to_owned();
+    let subject = git(dir, &["log", "-1", "--pretty=format:%s", &root]).await.unwrap_or_default();
+    let start = if subject == FIRST_COMMIT { root.as_str() } else { "HEAD" };
+    git(dir, &["update-ref", REVIEWED, start]).await.map(|_| ())
+}
+
+fn safe(path: &str) -> Result<(), String> {
+    let escapes = path.is_empty()
+        || path.starts_with(['/', '\\', '-'])
+        || path.contains(':')
+        || path.split(['/', '\\']).any(|part| part == "..");
+    if escapes {
+        Err("Chemin invalide".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Everything that differs from the last reviewed state, committed or not.
+pub async fn changes(dir: &Path) -> Result<Vec<Change>, String> {
+    reviewed(dir).await?;
+
+    let statuses = git(dir, &["diff", "--name-status", "--no-renames", REVIEWED]).await?;
+    let counts = git(dir, &["diff", "--numstat", "--no-renames", REVIEWED]).await?;
+    let count_of = |path: &str| {
+        counts
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let (added, deleted, name) = (fields.next()?, fields.next()?, fields.next()?);
+                (name == path).then(|| (added.parse().unwrap_or(0), deleted.parse().unwrap_or(0)))
+            })
+            .next()
+            .unwrap_or((0, 0))
+    };
+
+    let mut found: Vec<Change> = statuses
+        .lines()
+        .filter_map(|line| {
+            let (letter, path) = line.split_once('\t')?;
+            let (added, deleted) = count_of(path);
+            Some(Change {
+                path: path.to_owned(),
+                status: match letter {
+                    "A" => "added",
+                    "D" => "deleted",
+                    _ => "modified",
+                },
+                added,
+                deleted,
+            })
+        })
+        .collect();
+
+    // Files git doesn't know yet are changes too.
+    for path in git(dir, &["ls-files", "--others", "--exclude-standard"]).await?.lines() {
+        let lines = std::fs::read_to_string(dir.join(path))
+            .map(|text| text.lines().count() as u64)
+            .unwrap_or(0);
+        found.push(Change { path: path.to_owned(), status: "added", added: lines, deleted: 0 });
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(found)
+}
+
+pub async fn diff(dir: &Path, path: &str) -> Result<String, String> {
+    safe(path)?;
+    reviewed(dir).await?;
+    let tracked = git(dir, &["diff", "--no-renames", REVIEWED, "--", path]).await?;
+    if !tracked.is_empty() {
+        return Ok(tracked);
+    }
+    // An untracked file has no diff: all of it is new.
+    let text = std::fs::read_to_string(dir.join(path)).map_err(|error| error.to_string())?;
+    Ok(text.lines().map(|line| format!("+{line}\n")).collect())
+}
+
+/// The user has seen the changes and keeps them.
+pub async fn accept(dir: &Path) -> Result<String, String> {
+    reviewed(dir).await?;
+    snapshot(dir, "Changements relus").await?;
+    git(dir, &["update-ref", REVIEWED, "HEAD"]).await?;
+    Ok("Changements acceptés.".into())
+}
+
+/// Puts one file back to the last reviewed state; a file that didn't exist
+/// then is removed.
+pub async fn revert(dir: &Path, path: &str) -> Result<String, String> {
+    safe(path)?;
+    reviewed(dir).await?;
+    let existed = git(dir, &["cat-file", "-e", &format!("{REVIEWED}:{path}")]).await.is_ok();
+    if existed {
+        git(dir, &["checkout", REVIEWED, "--", path]).await?;
+    } else {
+        let _ = git(dir, &["rm", "--quiet", "--cached", "--force", "--", path]).await;
+        std::fs::remove_file(dir.join(path)).map_err(|error| error.to_string())?;
+    }
+    Ok(format!("{path} est revenu à son état relu."))
 }
 
 /// Commits everything that changed. Returns false when there was nothing to
@@ -196,6 +339,80 @@ mod tests {
         let subjects: Vec<String> = history(dir.path()).await.commits.into_iter().map(|commit| commit.subject).collect();
         assert_eq!(subjects.len(), 3);
         assert!(subjects[1].starts_with("Point de sauvegarde avant le retour"));
+    }
+
+    #[tokio::test]
+    async fn the_review_shows_what_changed_since_the_user_last_looked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Shop.luau");
+        std::fs::write(&file, "local a = 1\nreturn a\n").unwrap();
+        std::fs::write(dir.path().join("Old.luau"), "return 0\n").unwrap();
+        ensure_repo(dir.path()).await.unwrap();
+        assert!(changes(dir.path()).await.unwrap().is_empty());
+
+        // An agent edits and commits, another leaves files uncommitted.
+        std::fs::write(&file, "local a = 2\nlocal b = 3\nreturn a + b\n").unwrap();
+        snapshot(dir.path(), "travail d'un agent").await.unwrap();
+        std::fs::write(dir.path().join("New.luau"), "return {}\n").unwrap();
+        std::fs::remove_file(dir.path().join("Old.luau")).unwrap();
+
+        let found = changes(dir.path()).await.unwrap();
+        let summary: Vec<(&str, &str, u64, u64)> = found
+            .iter()
+            .map(|change| (change.path.as_str(), change.status, change.added, change.deleted))
+            .collect();
+        assert_eq!(
+            summary,
+            [("New.luau", "added", 1, 0), ("Old.luau", "deleted", 0, 1), ("Shop.luau", "modified", 3, 2)]
+        );
+        assert!(diff(dir.path(), "Shop.luau").await.unwrap().contains("+local b = 3"));
+        assert_eq!(diff(dir.path(), "New.luau").await.unwrap(), "+return {}\n");
+
+        // Undoing one file at a time: an edit, a deletion, a new file.
+        revert(dir.path(), "Shop.luau").await.unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "local a = 1\nreturn a\n");
+        revert(dir.path(), "Old.luau").await.unwrap();
+        assert!(dir.path().join("Old.luau").exists());
+        revert(dir.path(), "New.luau").await.unwrap();
+        assert!(!dir.path().join("New.luau").exists());
+        assert!(changes(dir.path()).await.unwrap().is_empty());
+
+        // Accepting moves the mark: what was new is now the reference.
+        std::fs::write(&file, "return 42\n").unwrap();
+        assert_eq!(changes(dir.path()).await.unwrap().len(), 1);
+        accept(dir.path()).await.unwrap();
+        assert!(changes(dir.path()).await.unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "return 42\n");
+    }
+
+    #[tokio::test]
+    async fn a_review_path_cannot_leave_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.luau"), "1").unwrap();
+        ensure_repo(dir.path()).await.unwrap();
+        for bad in ["../x", "C:/Windows/win.ini", "/etc/passwd", "--output=x", "a/../../b", ""] {
+            assert!(diff(dir.path(), bad).await.is_err(), "{bad}");
+            assert!(revert(dir.path(), bad).await.is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn files_a_command_dirtied_can_be_told_from_those_already_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.luau"), "1").unwrap();
+        std::fs::write(dir.path().join("b.luau"), "1").unwrap();
+        ensure_repo(dir.path()).await.unwrap();
+
+        std::fs::write(dir.path().join("a.luau"), "2").unwrap();
+        let before = dirty_paths(dir.path()).await.unwrap();
+        std::fs::write(dir.path().join("b.luau"), "2").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/c.luau"), "3").unwrap();
+        let after = dirty_paths(dir.path()).await.unwrap();
+
+        let mut new: Vec<&String> = after.difference(&before).collect();
+        new.sort();
+        assert_eq!(new, ["b.luau", "sub/c.luau"]);
     }
 
     #[tokio::test]

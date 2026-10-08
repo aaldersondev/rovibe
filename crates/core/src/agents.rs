@@ -122,6 +122,38 @@ fn holder_among<'a>(locks: &'a [Lock], project_id: &str, session_id: &str, path:
     })
 }
 
+/// What other agents hold in this project, with their names.
+fn held_by_others(state: &Shared, project_id: &str, session_id: &str) -> Vec<(String, String)> {
+    prune(state);
+    let held: Vec<(String, String)> = state
+        .locks
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|lock| lock.project_id == project_id && lock.session_id != session_id)
+        .map(|lock| (lock.path.clone(), lock.session_id.clone()))
+        .collect();
+    held.into_iter()
+        .map(|(path, holder)| (path, title_of(state, &holder)))
+        .collect()
+}
+
+/// The project files a file-writing tool is about to write, whichever agent
+/// calls it: Claude Code names one file, a Codex patch can name several.
+fn written_paths(project: &Project, tool: &str, input: &Value) -> Vec<String> {
+    let files: Vec<String> = match tool {
+        "apply_patch" => crate::guard::patch_paths(input["command"].as_str().unwrap_or_default()),
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => input["file_path"]
+            .as_str()
+            .or(input["notebook_path"].as_str())
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    };
+    files.iter().filter_map(|file| relative(project, file)).collect()
+}
+
 fn touch(state: &Shared, project_id: &str, session_id: &str, path: &str) {
     let mut locks = state.locks.lock().unwrap();
     if let Some(lock) = locks
@@ -314,54 +346,71 @@ pub async fn hook(
             session.set_status("working", "");
         }
         "PreToolUse" => {
-            let file = event["tool_input"]["file_path"]
-                .as_str()
-                .or(event["tool_input"]["notebook_path"].as_str());
-            let project = state.project(&session.info.project_id);
+            let tool = event["tool_name"].as_str().unwrap_or_default();
+            if let Some(project) = state.project(&session.info.project_id) {
+                let paths = written_paths(&project, tool, &event["tool_input"]);
+                let shell = matches!(tool, "Bash" | "PowerShell");
 
-            if let Some((project, path)) = project.zip(file).and_then(|(project, file)| {
-                relative(&project, file).map(|path| (project, path))
-            }) {
-                if let Some((other, note)) = holder(&state, &project.id, &session_id, &path) {
+                let mut refusal = paths.iter().find_map(|path| {
+                    let (other, note) = holder(&state, &project.id, &session_id, path)?;
                     let reason = if note.is_empty() { String::new() } else { format!(" ({note})") };
-                    crate::log::info(format!(
-                        "{} : modification de {path} refusée, tenu par {}",
-                        session.info.title,
+                    Some(format!(
+                        "{} travaille sur {path}{reason}. Ne modifie pas ce fichier maintenant : avance sur une autre partie de ta tâche, ou réessaie plus tard. L'outil agents_status du serveur essaim montre qui fait quoi.",
                         title_of(&state, &other)
-                    ));
+                    ))
+                });
+                if refusal.is_none() && shell {
+                    let command = event["tool_input"]["command"].as_str().unwrap_or_default();
+                    refusal = crate::guard::shell_conflict(command, &held_by_others(&state, &project.id, &session_id));
+                }
+
+                if let Some(reason) = refusal {
+                    crate::log::info(format!("{} : {tool} refusé, {reason}", session.info.title));
                     verdict = Json(json!({
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "deny",
-                            "permissionDecisionReason": format!(
-                                "{} travaille sur {path}{reason}. Ne modifie pas ce fichier maintenant : avance sur une autre partie de ta tâche, ou réessaie plus tard. L'outil agents_status du serveur essaim montre qui fait quoi.",
-                                title_of(&state, &other)
-                            ),
+                            "permissionDecisionReason": reason,
                         }
                     }));
+                } else if shell {
+                    // What the command changes can only be seen afterwards.
+                    *session.shell_before.lock().unwrap() = crate::git::dirty_paths(&project.path).await;
+                    session.set_status("working", "commande");
                 } else {
-                    touch(&state, &project.id, &session_id, &path);
-                    let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
-                    session.set_status("working", format!("modifie {name}"));
+                    for path in &paths {
+                        touch(&state, &project.id, &session_id, path);
+                        session.touched.lock().unwrap().insert(path.clone());
+                    }
+                    if let Some(path) = paths.first() {
+                        let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+                        session.set_status("working", format!("modifie {name}"));
+                    }
                 }
             }
         }
         "PostToolUse" => {
             let tool = event["tool_name"].as_str().unwrap_or_default();
 
-            // A file that no longer parses, or names something that doesn't
-            // exist, is cheaper to fix now than after a failed playtest.
-            let written = matches!(tool, "Edit" | "Write" | "MultiEdit")
-                .then(|| event["tool_input"]["file_path"].as_str())
-                .flatten();
-            if let Some((project, file)) = state.project(&session.info.project_id).zip(written) {
-                // Checkers run on this side, on the file's Windows path.
-                let on_host = match relative(&project, file) {
-                    Some(inside) => project.path.join(inside),
-                    None => FsPath::new(file).to_path_buf(),
-                };
-                if let Some(problems) = lint::after_edit(&state, &project, &on_host).await {
-                    verdict = Json(json!({ "decision": "block", "reason": problems }));
+            if let Some(project) = state.project(&session.info.project_id) {
+                let before = session.shell_before.lock().unwrap().take();
+                if let Some(before) = before {
+                    // Files a shell command changed are this agent's from now
+                    // on, exactly as if it had edited them.
+                    for path in crate::git::dirty_paths(&project.path).await.unwrap_or_default().difference(&before) {
+                        touch(&state, &project.id, &session_id, path);
+                        session.touched.lock().unwrap().insert(path.clone());
+                    }
+                }
+
+                // A file that no longer parses, or names something that
+                // doesn't exist, is cheaper to fix now than after a failed
+                // playtest. Checkers run on this side, on the Windows path.
+                for path in written_paths(&project, tool, &event["tool_input"]) {
+                    if let Some(problems) = lint::after_edit(&state, &project, &project.path.join(&path)).await {
+                        verdict = Json(json!({ "decision": "block", "reason": problems }));
+                        break;
+                    }
                 }
             }
 
@@ -369,6 +418,13 @@ pub async fn hook(
             if before != "working" || !session.status.lock().unwrap().detail.starts_with("modifie") {
                 session.set_status("working", tool);
             }
+        }
+        "PermissionRequest" => {
+            // Answering stays the user's: the empty verdict leaves the
+            // agent's own prompt on screen.
+            let tool = event["tool_name"].as_str().unwrap_or_default();
+            session.set_status("waiting", format!("demande l'autorisation d'utiliser {tool}"));
+            let _ = state.attention.send(session.info.title.clone());
         }
         "Notification" => {
             // The same event also fires when the agent has simply been idle
@@ -394,8 +450,15 @@ pub async fn hook(
     verdict
 }
 
+fn claude() -> Kind {
+    Kind::Claude
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Saved {
+    /// Absent from files written when only Claude Code could be resumed.
+    #[serde(default = "claude")]
+    pub kind: Kind,
     pub project_id: String,
     pub title: String,
     pub agent_id: String,
@@ -416,10 +479,11 @@ pub fn save_sessions(state: &Shared) {
         .lock()
         .unwrap()
         .values()
-        .filter(|session| session.info.kind == Kind::Claude)
+        .filter(|session| session.info.kind != Kind::Shell)
         .filter(|session| !session.exited.load(Ordering::Relaxed))
         .filter_map(|session| {
             Some(Saved {
+                kind: session.info.kind,
                 project_id: session.info.project_id.clone(),
                 title: session.info.title.clone(),
                 agent_id: session.agent_id.lock().unwrap().clone()?,
@@ -481,14 +545,16 @@ pub async fn resume(state: &Shared, agent_id: &str) -> Result<pty::SessionInfo, 
         let project = state.project(&session.project_id).ok_or("Projet inconnu")?;
         // If the isolated environment can't be brought back, the session
         // stays closed: reopening it unconfined would betray its name.
-        if session.isolated {
+        if session.isolated && session.kind == Kind::Claude {
             isolation::prepare(state, &project).await?;
         }
+        let in_wsl = session.isolated && session.kind == Kind::Claude;
         let launch = Launch {
-            kind: Kind::Claude,
+            kind: session.kind,
+            model: None,
             skip_permissions: session.skip_permissions,
             isolated: session.isolated,
-            in_wsl: session.isolated,
+            in_wsl,
             title: Some(session.title.clone()),
             // An agent that never got a prompt left no conversation to
             // resume; it simply starts again under the same name.

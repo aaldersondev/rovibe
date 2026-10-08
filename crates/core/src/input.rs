@@ -286,6 +286,14 @@ mod win {
         }
     }
 
+    /// Says whether every key of a shortcut has a name this module knows.
+    pub fn check_keys(keys: &[String]) -> Result<(), String> {
+        if keys.is_empty() {
+            return Err("Le raccourci est vide".into());
+        }
+        keys.iter().try_for_each(|key| scancode(key).map(|_| ()))
+    }
+
     pub(crate) fn viewport_area(studio: HWND, size: (i32, i32)) -> Result<RECT, String> {
         unsafe { viewport_rect(studio, size) }
     }
@@ -378,7 +386,12 @@ mod win {
 #[cfg(windows)]
 pub(crate) use win::viewport_area;
 #[cfg(windows)]
-pub use win::{blocking_dialog, dialog_open, run};
+pub use win::{blocking_dialog, check_keys, dialog_open, run};
+
+#[cfg(not(windows))]
+pub fn check_keys(_keys: &[String]) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(windows))]
 pub fn dialog_open(_place_name: &str) -> Result<bool, String> {
