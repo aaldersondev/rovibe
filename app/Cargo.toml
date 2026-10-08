@@ -1,5 +1,5 @@
 [package]
-name = "essaim"
+name = "rovibe"
 version = "0.2.0"
 edition = "2021"
 license = "MIT"
@@ -8,7 +8,7 @@ license = "MIT"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-essaim-core = { path = "../crates/core" }
+rovibe-core = { path = "../crates/core" }
 serde_json = "1"
 tauri = { version = "2", features = ["custom-protocol"] }
 tauri-plugin-updater = "2"

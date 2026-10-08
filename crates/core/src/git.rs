@@ -16,7 +16,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const ATTRIBUTES: &str = "* -text\n";
 
 const FIRST_COMMIT: &str = "Création du projet";
-const REVIEWED: &str = "refs/essaim/reviewed";
+const REVIEWED: &str = "refs/rovibe/reviewed";
 
 const IGNORE: &str = "# Places Studio : binaires, à enregistrer depuis Studio\n*.rbxl\n*.rbxlx\n*.rbxl.lock\n*.rbxlx.lock\n";
 
@@ -29,7 +29,7 @@ pub struct Commit {
 
 #[derive(Serialize)]
 pub struct History {
-    /// False when the folder isn't a repository root Essaim manages.
+    /// False when the folder isn't a repository root RoVibe manages.
     pub enabled: bool,
     pub dirty: usize,
     pub commits: Vec<Commit>,
@@ -62,7 +62,7 @@ async fn commit(dir: &Path, message: &str) -> Result<(), String> {
     let configured = git(dir, &["config", "user.email"]).await.is_ok_and(|email| !email.is_empty());
     let mut args = Vec::new();
     if !configured {
-        args.extend(["-c", "user.name=Essaim", "-c", "user.email=essaim@localhost"]);
+        args.extend(["-c", "user.name=RoVibe", "-c", "user.email=rovibe@localhost"]);
     }
     args.extend(["commit", "--quiet", "-m", message]);
     git(dir, &args).await.map(|_| ())
@@ -86,6 +86,17 @@ pub async fn ensure_repo(dir: &Path) -> Result<(), String> {
     git(dir, &["add", "-A"]).await?;
     commit(dir, FIRST_COMMIT).await?;
     git(dir, &["update-ref", REVIEWED, "HEAD"]).await.map(|_| ())
+}
+
+/// Carries over the review mark of a project from the name it had in an
+/// earlier version, so what awaited the user's review still does.
+pub async fn adopt_review_mark(dir: &Path, old: &str) {
+    if !is_root(dir) || git(dir, &["rev-parse", "--verify", "--quiet", REVIEWED]).await.is_ok() {
+        return;
+    }
+    if git(dir, &["update-ref", REVIEWED, old]).await.is_ok() {
+        let _ = git(dir, &["update-ref", "-d", old]).await;
+    }
 }
 
 /// Paths with uncommitted changes, relative to the project. `None` when the

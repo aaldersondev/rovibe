@@ -1,6 +1,6 @@
 # Origine
 
-Ce dossier est une copie de [rojo-rbx/rojo](https://github.com/rojo-rbx/rojo) au commit `7e60406373faf82887353164543540d054d84d92` (7.7.1), avec ses sous-modules, modifiée pour Essaim.
+Ce dossier est une copie de [rojo-rbx/rojo](https://github.com/rojo-rbx/rojo) au commit `7e60406373faf82887353164543540d054d84d92` (7.7.1), avec ses sous-modules, modifiée pour RoVibe.
 
 Fichiers modifiés par rapport à l'amont :
 

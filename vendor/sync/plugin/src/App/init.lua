@@ -870,7 +870,7 @@ function App:endSession()
 end
 
 function App:render()
-	local pluginName = "Essaim Sync " .. Version.display(Config.version)
+	local pluginName = "RoVibe Studio " .. Version.display(Config.version)
 
 	local function createPageElement(appStatus, additionalProps)
 		additionalProps = additionalProps or {}
@@ -1057,8 +1057,8 @@ function App:render()
 				name = pluginName,
 			}, {
 				button = e(StudioToggleButton, {
-					name = "Essaim",
-					tooltip = "Show or hide the Essaim Sync panel",
+					name = "RoVibe",
+					tooltip = "Show or hide the RoVibe Studio panel",
 					icon = self.state.toolbarIcon,
 					active = self.state.guiEnabled,
 					enabled = true,

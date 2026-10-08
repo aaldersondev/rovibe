@@ -5,21 +5,21 @@
 # release.ps1 calls it for the app, the sync server and the installer when
 # one of these is set; without them a release is simply left unsigned.
 #
-#   ESSAIM_SIGN_THUMBPRINT     SHA-1 thumbprint of a certificate in the Windows
+#   ROVIBE_SIGN_THUMBPRINT     SHA-1 thumbprint of a certificate in the Windows
 #                              store. The usual case: since 2023 certificate
 #                              authorities deliver keys on a USB token or in a
 #                              cloud HSM, both of which show up there.
-#   ESSAIM_SIGN_PFX            Path of a .pfx file, for a certificate that is
-#   ESSAIM_SIGN_PFX_PASSWORD   still a file. Its password, if it has one.
+#   ROVIBE_SIGN_PFX            Path of a .pfx file, for a certificate that is
+#   ROVIBE_SIGN_PFX_PASSWORD   still a file. Its password, if it has one.
 #
-#   ESSAIM_SIGN_TIMESTAMP      Timestamp server, default DigiCert's. A
+#   ROVIBE_SIGN_TIMESTAMP      Timestamp server, default DigiCert's. A
 #                              timestamp keeps the signature valid after the
 #                              certificate expires. `none` skips it.
 param([Parameter(Mandatory)][string]$File)
 $ErrorActionPreference = 'Stop'
 
-$thumbprint = $env:ESSAIM_SIGN_THUMBPRINT
-$pfx = $env:ESSAIM_SIGN_PFX
+$thumbprint = $env:ROVIBE_SIGN_THUMBPRINT
+$pfx = $env:ROVIBE_SIGN_PFX
 if (-not $thumbprint -and -not $pfx) {
     Write-Host "Signature : aucun certificat configuré, $([IO.Path]::GetFileName($File)) reste non signé"
     exit 0
@@ -40,9 +40,9 @@ if ($thumbprint) {
 } else {
     if (-not (Test-Path $pfx)) { throw "Certificat introuvable : $pfx" }
     $arguments += @('/f', $pfx)
-    if ($env:ESSAIM_SIGN_PFX_PASSWORD) { $arguments += @('/p', $env:ESSAIM_SIGN_PFX_PASSWORD) }
+    if ($env:ROVIBE_SIGN_PFX_PASSWORD) { $arguments += @('/p', $env:ROVIBE_SIGN_PFX_PASSWORD) }
 }
-$timestamp = if ($env:ESSAIM_SIGN_TIMESTAMP) { $env:ESSAIM_SIGN_TIMESTAMP } else { 'http://timestamp.digicert.com' }
+$timestamp = if ($env:ROVIBE_SIGN_TIMESTAMP) { $env:ROVIBE_SIGN_TIMESTAMP } else { 'http://timestamp.digicert.com' }
 if ($timestamp -ne 'none') { $arguments += @('/tr', $timestamp, '/td', 'SHA256') }
 $arguments += $File
 
@@ -54,7 +54,7 @@ $output = & $signtool @arguments 2>&1
 $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) {
     $shown = ($output | Out-String)
-    if ($env:ESSAIM_SIGN_PFX_PASSWORD) { $shown = $shown.Replace($env:ESSAIM_SIGN_PFX_PASSWORD, '***') }
+    if ($env:ROVIBE_SIGN_PFX_PASSWORD) { $shown = $shown.Replace($env:ROVIBE_SIGN_PFX_PASSWORD, '***') }
     throw "La signature de $File a échoué :`n$shown"
 }
 Write-Host "Signé : $([IO.Path]::GetFileName($File))"

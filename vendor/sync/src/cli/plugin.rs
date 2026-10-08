@@ -10,7 +10,7 @@ use roblox_install::RobloxStudio;
 use crate::serve_session::ServeSession;
 
 static PLUGIN_BINCODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/plugin.bincode"));
-static PLUGIN_FILE_NAME: &str = "EssaimSync.rbxm";
+static PLUGIN_FILE_NAME: &str = "RoVibeStudio.rbxm";
 
 /// Install Rojo's plugin.
 #[derive(Debug, Parser)]

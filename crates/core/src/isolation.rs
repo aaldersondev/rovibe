@@ -21,11 +21,11 @@ use tokio::{
 
 use crate::state::{Project, Shared};
 
-pub const DISTRO: &str = "essaim";
+const DISTRO: &str = "rovibe";
 pub const CLAUDE: &str = "/home/agent/.local/bin/claude";
 const RELAY: &str = include_str!("../plugin/relay.py");
-const RELAY_PATH: &str = "/opt/essaim/relay.py";
-const HOSTS_PATH: &str = "/opt/essaim/allowed-hosts";
+const RELAY_PATH: &str = "/opt/rovibe/relay.py";
+const HOSTS_PATH: &str = "/opt/rovibe/allowed-hosts";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -37,12 +37,12 @@ pub fn mount_point(project: &Project) -> String {
 /// Folder of the distribution, seen from Windows, where per-session
 /// configuration files are dropped for the agent to read.
 fn config_dir() -> PathBuf {
-    PathBuf::from(format!(r"\\wsl.localhost\{DISTRO}\home\agent\.essaim"))
+    PathBuf::from(format!(r"\\wsl.localhost\{}\home\agent\.rovibe", distro()))
 }
 
 pub fn config_path(session_id: &str, what: &str) -> (PathBuf, String) {
     let name = format!("{session_id}-{what}.json");
-    (config_dir().join(&name), format!("/home/agent/.essaim/{name}"))
+    (config_dir().join(&name), format!("/home/agent/.rovibe/{name}"))
 }
 
 /// Port, on the distribution's own loopback, of the proxy that is an
@@ -59,7 +59,7 @@ pub fn proxy_port(state: &Shared) -> u16 {
 /// which would be a way to carry data out one question at a time.
 fn network_script(restricted: bool, hosts: &[String]) -> String {
     let mut script = format!(
-        "mkdir -p /opt/essaim
+        "mkdir -p /opt/rovibe
 printf '%s\\n' {} > {HOSTS_PATH} && chmod 644 {HOSTS_PATH}\n",
         hosts.iter().map(|host| format!("'{host}'")).collect::<Vec<_>>().join(" ")
     );
@@ -70,14 +70,14 @@ printf '%s\\n' {} > {HOSTS_PATH} && chmod 644 {HOSTS_PATH}\n",
     } else {
         script.push_str("  command -v $t >/dev/null || continue\n");
     }
-    script.push_str("  $t -N ESSAIM 2>/dev/null; $t -F ESSAIM || exit 1\n");
+    script.push_str("  $t -N ROVIBE 2>/dev/null; $t -F ROVIBE || exit 1\n");
     if restricted {
         script.push_str(
-            "  $t -A ESSAIM -p udp --dport 53 -j REJECT && $t -A ESSAIM -p tcp --dport 53 -j REJECT \\\n    && $t -A ESSAIM -o lo -j ACCEPT && $t -A ESSAIM -j REJECT || exit 1\n",
+            "  $t -A ROVIBE -p udp --dport 53 -j REJECT && $t -A ROVIBE -p tcp --dport 53 -j REJECT \\\n    && $t -A ROVIBE -o lo -j ACCEPT && $t -A ROVIBE -j REJECT || exit 1\n",
         );
     }
     script.push_str(
-        "  $t -C OUTPUT -m owner --uid-owner $uid -j ESSAIM 2>/dev/null || $t -A OUTPUT -m owner --uid-owner $uid -j ESSAIM || exit 1\n",
+        "  $t -C OUTPUT -m owner --uid-owner $uid -j ROVIBE 2>/dev/null || $t -A OUTPUT -m owner --uid-owner $uid -j ROVIBE || exit 1\n",
     );
     script.push_str("done\n");
     script
@@ -88,7 +88,7 @@ printf '%s\\n' {} > {HOSTS_PATH} && chmod 644 {HOSTS_PATH}\n",
 async fn root_script(script: &str) -> Result<(), String> {
     let mut command = Command::new("wsl.exe");
     command
-        .args(["-d", DISTRO, "-u", "root", "--", "sh", "-s"])
+        .args(["-d", distro(), "-u", "root", "--", "sh", "-s"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -159,7 +159,7 @@ pub fn proxy_env(state: &Shared) -> Vec<String> {
 
 async fn wsl(user: Option<&str>, script: &str) -> Result<String, String> {
     let mut command = Command::new("wsl.exe");
-    command.args(["-d", DISTRO]);
+    command.args(["-d", distro()]);
     if let Some(user) = user {
         command.args(["-u", user]);
     }
@@ -184,10 +184,21 @@ async fn wsl(user: Option<&str>, script: &str) -> Result<String, String> {
     }
 }
 
-/// Whether the distribution exists. Asked on every refresh of the UI, so the
-/// answer is kept for a while: listing distributions takes a noticeable time.
 pub fn available() -> bool {
-    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    installed().is_some()
+}
+
+/// The distribution to run agents in: ours, or the one an earlier version of
+/// the app created under its former name.
+pub fn distro() -> &'static str {
+    installed().unwrap_or(DISTRO)
+}
+
+/// Which distribution exists, if any. Asked on every refresh of the UI, so
+/// the answer is kept for a while: listing distributions takes a noticeable
+/// time.
+fn installed() -> Option<&'static str> {
+    static CACHE: Mutex<Option<(Instant, Option<&'static str>)>> = Mutex::new(None);
     let mut cache = CACHE.lock().unwrap();
     if let Some((at, known)) = *cache {
         if at.elapsed() < Duration::from_secs(60) {
@@ -200,13 +211,16 @@ pub fn available() -> bool {
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
     // wsl.exe prints its own listings in UTF-16.
-    let found = command.output().is_ok_and(|output| {
+    let found = command.output().ok().and_then(|output| {
         let units: Vec<u16> = output
             .stdout
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
-        String::from_utf16_lossy(&units).lines().any(|line| line.trim() == DISTRO)
+        let listing = String::from_utf16_lossy(&units);
+        [DISTRO, crate::legacy::OLD_DISTRO]
+            .into_iter()
+            .find(|name| listing.lines().any(|line| line.trim() == *name))
     });
     *cache = Some((Instant::now(), found));
     found
@@ -221,8 +235,8 @@ async fn start_relay(state: &Shared) -> Result<(), String> {
     // always matches this version of the app.
     let mut install = Command::new("wsl.exe");
     install
-        .args(["-d", DISTRO, "-u", "root", "--", "sh", "-c"])
-        .arg(format!("mkdir -p /opt/essaim && cat > {RELAY_PATH}"))
+        .args(["-d", distro(), "-u", "root", "--", "sh", "-c"])
+        .arg(format!("mkdir -p /opt/rovibe && cat > {RELAY_PATH}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -236,7 +250,7 @@ async fn start_relay(state: &Shared) -> Result<(), String> {
 
     let mut command = Command::new("wsl.exe");
     command
-        .args(["-d", DISTRO, "-u", "root", "--", "python3", "-u", RELAY_PATH])
+        .args(["-d", distro(), "-u", "root", "--", "python3", "-u", RELAY_PATH])
         .arg(state.port.to_string())
         .arg(proxy_port(state).to_string())
         .arg(HOSTS_PATH)
@@ -318,7 +332,7 @@ pub async fn prepare(state: &Shared, project: &Project) -> Result<(), String> {
     wsl(
         Some("root"),
         &format!(
-            "mkdir -p {target} && (mountpoint -q {target} || mount -t drvfs '{source}' {target} -o uid=$(id -u agent),gid=$(id -g agent))"
+            "mkdir -p /home/agent/.rovibe && chown agent:agent /home/agent/.rovibe && mkdir -p {target} && (mountpoint -q {target} || mount -t drvfs '{source}' {target} -o uid=$(id -u agent),gid=$(id -g agent))"
         ),
     )
     .await
@@ -349,17 +363,17 @@ mod tests {
     fn a_closed_network_leaves_the_agent_its_loopback_only() {
         let hosts = vec!["*.anthropic.com".to_owned(), "claude.ai".to_owned()];
         let closed = network_script(true, &hosts);
-        assert!(closed.contains("printf '%s\\n' '*.anthropic.com' 'claude.ai' > /opt/essaim/allowed-hosts"));
+        assert!(closed.contains("printf '%s\\n' '*.anthropic.com' 'claude.ai' > /opt/rovibe/allowed-hosts"));
         // DNS is refused before loopback is allowed: WSL's resolver sits on it.
         let dns = closed.find("--dport 53 -j REJECT").unwrap();
         let loopback = closed.find("-o lo -j ACCEPT").unwrap();
-        let rest = closed.find("-A ESSAIM -j REJECT").unwrap();
+        let rest = closed.find("-A ROVIBE -j REJECT").unwrap();
         assert!(dns < loopback && loopback < rest);
         // A distribution without a firewall must not start an agent.
         assert!(closed.contains("exit 3"));
 
         let open = network_script(false, &hosts);
-        assert!(open.contains("-F ESSAIM"));
+        assert!(open.contains("-F ROVIBE"));
         assert!(!open.contains("REJECT") && !open.contains("exit 3"));
     }
 }

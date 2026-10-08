@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::{agents, assets, git, isolation, mcp, projects, pty, state::Shared, sync};
 
-const PLUGIN_FILE: &str = "EssaimSync.rbxm";
+const PLUGIN_FILE: &str = "RoVibeStudio.rbxm";
 
 type ApiResult = Result<Json<Value>, (StatusCode, Json<Value>)>;
 
@@ -29,8 +29,44 @@ fn fail(message: impl Into<String>) -> (StatusCode, Json<Value>) {
     )
 }
 
+fn plugins_dir() -> Option<std::path::PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join("Roblox/Plugins"))
+}
+
 fn plugin_installed() -> bool {
-    dirs::data_local_dir().is_some_and(|dir| dir.join("Roblox/Plugins").join(PLUGIN_FILE).exists())
+    plugins_dir().is_some_and(|dir| dir.join(PLUGIN_FILE).exists())
+}
+
+async fn write_plugin() -> Result<(), String> {
+    let binary = sync::binary().ok_or("Serveur de synchro introuvable")?;
+    let output = tokio::process::Command::new(binary)
+        .args(["plugin", "install"])
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    if let Some(dir) = plugins_dir() {
+        crate::legacy::remove_old_plugin(&dir);
+    }
+    Ok(())
+}
+
+/// A plugin installed under the app's former name is swapped for the current
+/// one. Studio keeps the one it has loaded until it restarts.
+pub fn replace_old_plugin(state: &Shared) {
+    if !plugins_dir().is_some_and(|dir| crate::legacy::old_plugin_installed(&dir)) {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        match write_plugin().await {
+            Ok(()) => crate::log::info("Plugin Studio renommé en RoVibe Studio : redémarre Studio pour le charger"),
+            Err(error) => crate::log::warn(format!("Plugin Studio : {error}")),
+        }
+        state.notify();
+    });
 }
 
 pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
@@ -377,22 +413,13 @@ pub async fn remove_session(State(state): State<Shared>, Path(id): Path<String>)
 }
 
 pub async fn install_plugin(State(state): State<Shared>) -> ApiResult {
-    let binary = sync::binary().ok_or_else(|| fail("Serveur de synchro introuvable"))?;
-    let output = tokio::process::Command::new(binary)
-        .args(["plugin", "install"])
-        .output()
-        .await
-        .map_err(|error| fail(error.to_string()))?;
-
-    if !output.status.success() {
-        return Err(fail(String::from_utf8_lossy(&output.stderr).into_owned()));
-    }
+    write_plugin().await.map_err(fail)?;
     state.notify();
     Ok(Json(json!({ "message": "Plugin installé. Redémarre Roblox Studio pour le charger." })))
 }
 
 fn prompts_path(project: &crate::state::Project) -> std::path::PathBuf {
-    project.path.join(".essaim").join("consignes.json")
+    project.path.join(".rovibe").join("consignes.json")
 }
 
 /// Saved prompts live in the project, so they are versioned with it.

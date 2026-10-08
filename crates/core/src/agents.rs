@@ -355,7 +355,7 @@ pub async fn hook(
                     let (other, note) = holder(&state, &project.id, &session_id, path)?;
                     let reason = if note.is_empty() { String::new() } else { format!(" ({note})") };
                     Some(format!(
-                        "{} travaille sur {path}{reason}. Ne modifie pas ce fichier maintenant : avance sur une autre partie de ta tâche, ou réessaie plus tard. L'outil agents_status du serveur essaim montre qui fait quoi.",
+                        "{} travaille sur {path}{reason}. Ne modifie pas ce fichier maintenant : avance sur une autre partie de ta tâche, ou réessaie plus tard. L'outil agents_status du serveur rovibe montre qui fait quoi.",
                         title_of(&state, &other)
                     ))
                 });

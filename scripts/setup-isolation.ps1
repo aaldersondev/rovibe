@@ -1,4 +1,4 @@
-# Creates the WSL distribution Essaim runs isolated agents in.
+# Creates the WSL distribution RoVibe runs isolated agents in.
 #
 # An agent started there sees one Windows folder, its project, and nothing
 # else of the PC: drives aren't mounted, Windows programs can't be launched,
@@ -7,9 +7,12 @@
 #
 # Run once. Downloads Ubuntu (about 350 MB) and Claude Code into it.
 $ErrorActionPreference = 'Stop'
-$distro = 'essaim'
+$distro = 'rovibe'
 
 $existing = (wsl.exe --list --quiet) -replace "`0", ""
+# A distribution made when the app had another name is kept and brought up
+# to date: the app uses it as it is.
+if ($existing -contains 'essaim') { $distro = 'essaim' }
 if ($existing -notcontains $distro) {
     wsl.exe --install Ubuntu-24.04 --name $distro --no-launch
     if ($LASTEXITCODE -ne 0) { throw "L'installation de la distribution a échoué" }
@@ -27,8 +30,8 @@ gpasswd -d agent sudo >/dev/null 2>&1 || true
 passwd -l root >/dev/null
 
 su - agent -c 'command -v ~/.local/bin/claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash' >/dev/null
-mkdir -p /work /home/agent/.essaim
-chown agent:agent /home/agent/.essaim
+mkdir -p /work /home/agent/.rovibe
+chown agent:agent /home/agent/.rovibe
 
 cat > /etc/wsl.conf <<CONF
 [automount]

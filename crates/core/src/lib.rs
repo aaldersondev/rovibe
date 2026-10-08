@@ -1,4 +1,4 @@
-//! Essaim's local server: agent terminals, the Studio bridge, the MCP
+//! RoVibe's local server: agent terminals, the Studio bridge, the MCP
 //! endpoint and the web UI, all on one loopback port.
 
 mod agents;
@@ -12,6 +12,7 @@ pub mod log;
 mod input;
 mod isolation;
 mod jobs;
+mod legacy;
 mod mcp;
 mod projects;
 mod pty;
@@ -70,22 +71,14 @@ impl Handle {
     }
 }
 
-/// Settings live under Roaming, apart from the program: the installer puts
-/// the app in `%LOCALAPPDATA%\Essaim`, where earlier versions kept them.
-fn data_dir() -> anyhow::Result<PathBuf> {
+/// Settings live under Roaming, apart from the program, which the installer
+/// puts in `%LOCALAPPDATA%\RoVibe`.
+pub fn data_dir() -> anyhow::Result<PathBuf> {
     let dir = dirs::data_dir()
         .ok_or_else(|| anyhow::anyhow!("no data directory"))?
-        .join("Essaim");
+        .join("RoVibe");
     std::fs::create_dir_all(&dir)?;
-
-    let previous = dirs::data_local_dir().map(|local| local.join("Essaim"));
-    if let Some(previous) = previous.filter(|_| !dir.join("projects.json").exists()) {
-        for file in ["token", "projects.json", "sessions.json"] {
-            if previous.join(file).exists() {
-                let _ = std::fs::copy(previous.join(file), dir.join(file));
-            }
-        }
-    }
+    legacy::adopt_settings(&dir);
     Ok(dir)
 }
 
@@ -153,7 +146,7 @@ async fn ui(State(state): State<Shared>, uri: Uri) -> Response {
     if path == "index.html" {
         // Only a same-origin page can read this response, so embedding the
         // token here doesn't expose it to other sites.
-        let html = String::from_utf8_lossy(&file.data).replace("__ESSAIM_TOKEN__", &state.token);
+        let html = String::from_utf8_lossy(&file.data).replace("__ROVIBE_TOKEN__", &state.token);
         return ([(CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response();
     }
 
@@ -216,11 +209,14 @@ fn router(state: Shared) -> Router {
 }
 
 /// Binds the server and runs it in the background. Fails if the port is taken,
-/// which usually means another Essaim is already running.
+/// which usually means another RoVibe is already running.
 pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
     let data_dir = data_dir()?;
     log::init(&data_dir);
-    log::info(format!("Essaim {version} démarre, port {port}, réglages dans {}", data_dir.display()));
+    log::info(format!("RoVibe {version} démarre, port {port}, réglages dans {}", data_dir.display()));
+
+    // Before the projects are read: their folder may change name here.
+    legacy::move_home(&projects::documents_home(), &data_dir);
 
     let token = load_token(&data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -230,6 +226,8 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
 
     let projects = state.projects.lock().unwrap().clone();
     for project in &projects {
+        legacy::rename_in_project(&project.path);
+        git::adopt_review_mark(&project.path, legacy::OLD_REVIEWED).await;
         let _ = projects::write_mcp_config(&state, &project.id);
         let _ = sync::start(&state, project);
     }
@@ -240,6 +238,7 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
     });
 
     agents::load_dormant(&state);
+    api::replace_old_plugin(&state);
 
     Ok(Handle {
         state,

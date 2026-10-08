@@ -43,11 +43,8 @@ pub struct BankAsset {
 }
 
 pub fn bank_dir() -> PathBuf {
-    dirs::document_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_default()
-        .join("Essaim")
-        .join("Banque")
+    let home = crate::projects::documents_home();
+    crate::legacy::home_in_use(&home).unwrap_or(home).join("Banque")
 }
 
 fn load_index(dir: &Path) -> HashMap<String, Meta> {

@@ -813,3 +813,17 @@ dialog label.check {
 .store button {
   margin-top: auto;
 }
+
+.badges {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+.badges span {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--deck);
+  font-size: 12px;
+  font-weight: 600;
+}

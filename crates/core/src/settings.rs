@@ -15,7 +15,7 @@ pub struct Settings {
     pub claude_model: String,
     /// Same for Codex.
     pub codex_model: String,
-    /// Where new projects are created; empty means Documents\Essaim.
+    /// Where new projects are created; empty means Documents\RoVibe.
     pub projects_dir: String,
     /// Studio's "Publish to Roblox" shortcut, for users who rebound it.
     pub publish_shortcut: String,
