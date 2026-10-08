@@ -486,6 +486,9 @@ dialog.wide {
 
 .pane {
   display: grid;
+  /* A column of its own width, not its content's: a terminal wider than its
+     pane would otherwise stretch the header with it. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   min-width: 0;
   min-height: 0;
@@ -634,12 +637,23 @@ dialog.wide {
   white-space: nowrap;
 }
 
+/* The terminal is laid over its pane rather than in it: its size follows
+   the pane's and never the other way round. In the flow, a terminal a few
+   columns too wide widens its pane, which is measured again, and the panes
+   push each other back and forth. */
 .pane-body {
+  position: relative;
+  min-width: 0;
   min-height: 0;
-  padding: 6px 0 0 8px;
+  overflow: hidden;
 }
 
-.pane-body .xterm {
+.pane-term {
+  position: absolute;
+  inset: 6px 0 0 8px;
+}
+
+.pane-term .xterm {
   height: 100%;
 }
 
