@@ -16,10 +16,14 @@ use crate::state::{Project, Shared};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const DEFAULT_SELENE_CONFIG: &str = "std = \"roblox\"\n";
+/// Roblox's globals, minus a rule about layout: on real game code it buried
+/// every actual finding under hundreds of "one statement per line".
+const DEFAULT_SELENE_CONFIG: &str = "std = \"roblox\"\n\n[lints]\nmultiple_statements = \"allow\"\n";
 
 pub struct Diagnostic {
     pub error: bool,
+    /// Name of the lint, for findings that have one.
+    pub rule: Option<String>,
     /// `path:line: message`, path relative to the project.
     pub text: String,
 }
@@ -62,10 +66,9 @@ fn selene_config(state: &Shared, project: &Project) -> PathBuf {
     if own.exists() {
         return own;
     }
+    // Rewritten every time, so an updated app updates its defaults.
     let fallback = state.data_dir.join("selene.toml");
-    if !fallback.exists() {
-        let _ = std::fs::write(&fallback, DEFAULT_SELENE_CONFIG);
-    }
+    let _ = std::fs::write(&fallback, DEFAULT_SELENE_CONFIG);
     fallback
 }
 
@@ -93,6 +96,7 @@ fn parse_selene(project: &Project, line: &str) -> Option<Diagnostic> {
     let (_column, line_number, path) = (parts.next()?, parts.next()?, parts.next()?);
     Some(Diagnostic {
         error: severity == "error",
+        rule: Some(rule.to_owned()),
         text: format!("{}:{line_number}: {message} [{rule}]", strip_root(project, path)),
     })
 }
@@ -120,7 +124,12 @@ pub async fn types(state: &Shared, project: &Project, targets: &[PathBuf]) -> Op
     std::fs::create_dir_all(&dir).ok()?;
 
     let mut command = Command::new(&checker);
-    command.current_dir(&project.path).arg("analyze").arg("--formatter=plain");
+    // Without this the checker turns on every experimental flag, among them
+    // a type solver that reported fields as missing from tables that declare
+    // them, on code that runs fine.
+    command
+        .current_dir(&project.path)
+        .args(["analyze", "--formatter=plain", "--no-flags-enabled"]);
 
     if let Some(definitions) = tools_dir().map(|dir| dir.join("globalTypes.d.luau")).filter(|path| path.exists()) {
         command.arg(format!("--definitions=@roblox={}", definitions.display()));
@@ -152,18 +161,25 @@ pub async fn types(state: &Shared, project: &Project, targets: &[PathBuf]) -> Op
 fn parse_types(project: &Project, line: &str) -> Option<Diagnostic> {
     let (location, message) = line.split_once(": (")?;
     let (_, message) = message.split_once(") ")?;
-    let message = message.strip_prefix("TypeError: ").or(message.strip_prefix("SyntaxError: "))?;
+    // On untyped game code the type checker mostly reports fields a table
+    // gains after it is created: worth a look, not worth stopping an agent.
+    // A file that doesn't parse is another matter.
+    let (message, syntax) = match message.strip_prefix("SyntaxError: ") {
+        Some(message) => (message, true),
+        None => (message.strip_prefix("TypeError: ")?, false),
+    };
     let mut parts = location.rsplitn(3, ':');
     let (_columns, line_number, path) = (parts.next()?, parts.next()?, parts.next()?);
     let path = path.split(" [").next().unwrap_or(path);
     Some(Diagnostic {
-        error: true,
+        error: syntax,
+        rule: Some(if syntax { "syntax" } else { "type" }.to_owned()),
         text: format!("{}:{line_number}: {message}", strip_root(project, path)),
     })
 }
 
 /// The `check_code` tool: both checkers over the given paths, errors first.
-pub async fn check(state: &Shared, project: &Project, paths: &[String]) -> Result<String, String> {
+pub async fn check(state: &Shared, project: &Project, paths: &[String], with_warnings: bool) -> Result<String, String> {
     let targets: Vec<PathBuf> = if paths.is_empty() {
         vec![PathBuf::from("src")]
     } else {
@@ -201,13 +217,33 @@ pub async fn check(state: &Shared, project: &Project, paths: &[String]) -> Resul
     }
 
     let mut text = format!("{errors} erreur(s), {warnings} avertissement(s)\n");
-    for diagnostic in all.iter().take(80) {
+    let listed: Vec<&Diagnostic> = all
+        .iter()
+        .filter(|diagnostic| diagnostic.error || with_warnings)
+        .collect();
+    for diagnostic in listed.iter().take(80) {
         text.push_str(if diagnostic.error { "erreur  " } else { "avert.  " });
         text.push_str(&diagnostic.text);
         text.push('\n');
     }
-    if all.len() > 80 {
-        text.push_str(&format!("… {} autres : restreins `paths`\n", all.len() - 80));
+    if listed.len() > 80 {
+        text.push_str(&format!("… {} autres : restreins `paths`\n", listed.len() - 80));
+    }
+
+    // Warnings are counted by kind rather than listed: on a real project
+    // there are hundreds, and the errors are what must not be missed.
+    if !with_warnings && warnings > 0 {
+        let mut by_rule: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for diagnostic in all.iter().filter(|diagnostic| !diagnostic.error) {
+            *by_rule.entry(diagnostic.rule.as_deref().unwrap_or("autre")).or_default() += 1;
+        }
+        let mut kinds: Vec<_> = by_rule.into_iter().collect();
+        kinds.sort_by(|a, b| b.1.cmp(&a.1));
+        let summary: Vec<String> = kinds.iter().map(|(rule, count)| format!("{rule} ×{count}")).collect();
+        text.push_str(&format!(
+            "Avertissements : {}. Passe `warnings: true` pour les lister.\n",
+            summary.join(", ")
+        ));
     }
     Ok(text)
 }
@@ -280,7 +316,11 @@ mod tests {
     fn type_errors_are_read_and_lints_are_left_to_selene() {
         let line = r"c:\Jeux\Demo\src\shared\Bad.luau [game/ReplicatedStorage/Shared/Bad]:4:1-25: (W0) TypeError: Expected this to be 'number', but got 'string'";
         let found = parse_types(&project(), line).unwrap();
-        assert!(found.error);
+        // A type finding is a warning; only a file that doesn't parse is an error.
+        assert!(!found.error);
+        assert_eq!(found.rule.as_deref(), Some("type"));
+        let broken = parse_types(&project(), "src/a.luau:9:1-4: (E0) SyntaxError: Expected 'end'").unwrap();
+        assert!(broken.error);
         assert_eq!(found.text, "src/shared/Bad.luau:4: Expected this to be 'number', but got 'string'");
 
         let lint = "src/shared/Bad.luau:1:7-7: (W0) LocalUnused: Variable 'x' is never used; prefix with '_' to silence";

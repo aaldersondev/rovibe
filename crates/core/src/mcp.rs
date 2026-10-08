@@ -120,7 +120,8 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Fichiers ou dossiers relatifs au projet. Défaut : `src`." }
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Fichiers ou dossiers relatifs au projet. Défaut : `src`." },
+                    "warnings": { "type": "boolean", "description": "Lister aussi les avertissements. Par défaut seules les erreurs sont détaillées, les avertissements sont comptés par type." }
                 }
             }
         },
@@ -783,7 +784,7 @@ async fn call_tool(
                 .flatten()
                 .filter_map(|path| path.as_str().map(str::to_owned))
                 .collect();
-            lint::check(state, project, &paths).await
+            lint::check(state, project, &paths, args["warnings"] == true).await
         }
         other => Err(format!("Outil inconnu : {other}")),
     }

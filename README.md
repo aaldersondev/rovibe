@@ -47,6 +47,15 @@ Au démarrage, l'app lit `latest.json` sur la dernière release GitHub du dépô
 
 `claude` et `codex` doivent être dans le PATH. L'app n'inclut aucun modèle : chaque agent utilise ton propre abonnement.
 
+## Tests
+
+```powershell
+cd ui; npm run build; cd ..     # le serveur embarque l'interface
+cargo test -p essaim-core
+```
+
+Les tests couvrent ce qui peut faire perdre du travail : l'import d'une place, les verrous de fichiers entre agents, le retour arrière git, le choix du Studio visé, la lecture des vérificateurs de code et les codes de touches. Ils tournent aussi sur chaque push (`.github/workflows/ci.yml`).
+
 ## Architecture
 
 | Dossier | Rôle |

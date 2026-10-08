@@ -463,6 +463,13 @@ dialog label span {
   color: var(--muted);
 }
 
+dialog select {
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
 dialog input {
   background: var(--ink);
   border: 1px solid var(--line);

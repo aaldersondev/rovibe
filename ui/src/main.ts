@@ -265,8 +265,13 @@ const dialog = h("dialog");
 function openProjectDialog() {
   const name = h("input", { name: "name", required: true, autocomplete: "off" });
   const path = h("input", { name: "path", autocomplete: "off", placeholder: "Documents\\Essaim\\<nom>" });
-  const studioOpen = state?.studios.find((studio) => studio.context === "edit");
-  const importStudio = h("input", { type: "checkbox", disabled: !studioOpen });
+  const open = (state?.studios ?? []).filter((studio) => studio.context === "edit");
+  const importStudio = h(
+    "select",
+    { disabled: open.length === 0 },
+    h("option", { value: "" }, open.length === 0 ? "Aucune place ouverte dans Studio" : "Ne rien importer : projet vide"),
+    ...open.map((studio) => h("option", { value: studio.id }, `Importer les scripts de « ${studio.name} »`)),
+  );
   const form = h(
     "form",
     {
@@ -277,7 +282,7 @@ function openProjectDialog() {
           const project = await api<Project & { message?: string }>("/api/projects", "POST", {
             name: name.value,
             path: path.value,
-            import_studio: importStudio.checked,
+            import_studio: importStudio.value ? Number(importStudio.value) : null,
           });
           select(project.id);
           dialog.close();
@@ -295,11 +300,9 @@ function openProjectDialog() {
     ),
     h(
       "label",
-      { class: "check" },
+      {},
+      h("span", {}, "Partir d'un jeu existant. Seuls les scripts deviennent des fichiers ; la place n'est pas modifiée."),
       importStudio,
-      studioOpen
-        ? `Importer les scripts de « ${studioOpen.name} », la place ouverte dans Studio`
-        : "Importer une place existante : ouvre-la d'abord dans Studio",
     ),
     h(
       "div",
