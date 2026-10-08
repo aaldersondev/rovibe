@@ -3165,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "rovibe"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "rovibe-core",
  "serde_json",
@@ -3177,7 +3177,7 @@ dependencies = [
 
 [[package]]
 name = "rovibe-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "axum",
