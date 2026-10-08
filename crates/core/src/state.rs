@@ -59,6 +59,50 @@ pub struct LogEntry {
 }
 
 /// Something an agent may only do once the user has said yes in the app.
+/// Events for the program that shows the window, which may be another
+/// process than this server. It asks for what came after the last one it
+/// saw, and waits if nothing did.
+#[derive(Default)]
+pub struct HostLog {
+    events: Mutex<(u64, std::collections::VecDeque<(u64, serde_json::Value)>)>,
+    arrived: tokio::sync::Notify,
+}
+
+impl HostLog {
+    pub fn push(&self, event: serde_json::Value) {
+        let mut events = self.events.lock().unwrap();
+        events.0 += 1;
+        let number = events.0;
+        events.1.push_back((number, event));
+        if events.1.len() > 64 {
+            events.1.pop_front();
+        }
+        drop(events);
+        self.arrived.notify_waiters();
+    }
+
+    /// The number of the last event, and those that came after `seen`.
+    pub fn since(&self, seen: u64) -> (u64, Vec<serde_json::Value>) {
+        let events = self.events.lock().unwrap();
+        let after = events.1.iter().filter(|(number, _)| *number > seen).map(|(_, event)| event.clone()).collect();
+        (events.0, after)
+    }
+
+    pub async fn wait(&self, seen: u64, limit: std::time::Duration) -> (u64, Vec<serde_json::Value>) {
+        // Registered before looking, so that an event landing in between
+        // still ends the wait.
+        let arrival = self.arrived.notified();
+        tokio::pin!(arrival);
+        arrival.as_mut().enable();
+        let now = self.since(seen);
+        if !now.1.is_empty() {
+            return now;
+        }
+        let _ = tokio::time::timeout(limit, arrival).await;
+        self.since(seen)
+    }
+}
+
 /// A short message for the user: an agent needs them, or has finished.
 #[derive(Clone)]
 pub struct Notice {
@@ -116,6 +160,11 @@ pub struct AppState {
     pub wsl_relay: Mutex<bool>,
     /// Version of an update the host found, if any.
     pub update: Mutex<Option<String>>,
+    /// Version of the app, when it is newer than this server: an update was
+    /// installed while sessions kept this one running.
+    pub pending: Mutex<Option<String>>,
+    /// What the window's program has to hear about, in order.
+    pub host: HostLog,
     /// The user asking for that update to be installed.
     pub install_update: broadcast::Sender<()>,
     /// What the user chose to do with the window when closing it while
@@ -158,6 +207,8 @@ impl AppState {
             window: broadcast::channel(4).0,
             events: broadcast::channel(16).0,
             attention: broadcast::channel(16).0,
+            pending: Mutex::new(None),
+            host: HostLog::default(),
             notices: broadcast::channel(16).0,
             next_id: AtomicU64::new(1),
         }

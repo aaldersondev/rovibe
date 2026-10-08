@@ -214,6 +214,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
         "approvals": approvals,
         "dormant": dormant,
         "update": *state.update.lock().unwrap(),
+        "pending": *state.pending.lock().unwrap(),
         "isolation": isolation::available(),
         "checkers": { "selene": found.selene, "luau_lsp": found.luau_lsp },
         "projects": projects,
@@ -427,6 +428,72 @@ pub async fn protect_project(
         "Projet déprotégé : la synchro s'applique sans confirmation."
     };
     Ok(Json(json!({ "message": message })))
+}
+
+/// Who is listening on this port, and in which version: how the app tells a
+/// RoVibe server from any other program, before it has a token to show.
+pub async fn ping(State(state): State<Shared>) -> Json<Value> {
+    Json(json!({ "app": "rovibe", "version": state.version }))
+}
+
+#[derive(Deserialize)]
+pub struct Seen {
+    after: Option<u64>,
+}
+
+/// What happened for the window's program since the event it last saw. With
+/// no `after`, only where the log stands: a program that just arrived has no
+/// use for old events.
+pub async fn host_events(State(state): State<Shared>, axum::extract::Query(seen): axum::extract::Query<Seen>) -> Json<Value> {
+    let (last, events) = match seen.after {
+        // A caller that is ahead of the log followed a server that has
+        // since been replaced: for this one, it has seen nothing yet.
+        Some(after) => {
+            let after = if after > state.host.since(u64::MAX).0 { 0 } else { after };
+            state.host.wait(after, Duration::from_secs(25)).await
+        }
+        None => (state.host.since(u64::MAX).0, Vec::new()),
+    };
+    Json(json!({ "last": last, "events": events }))
+}
+
+#[derive(Deserialize)]
+pub struct Version {
+    version: Option<String>,
+}
+
+/// The window's program found a newer version to offer.
+pub async fn host_update(State(state): State<Shared>, Json(body): Json<Version>) -> ApiResult {
+    *state.update.lock().unwrap() = body.version;
+    state.notify();
+    Ok(Json(json!({})))
+}
+
+/// The app was updated while this server kept sessions running: it says so,
+/// and the user decides when to restart it.
+pub async fn host_pending(State(state): State<Shared>, Json(body): Json<Version>) -> ApiResult {
+    *state.pending.lock().unwrap() = body.version;
+    state.notify();
+    Ok(Json(json!({})))
+}
+
+/// The user asks for the server to be replaced by the updated one now.
+pub async fn host_restart(State(state): State<Shared>) -> ApiResult {
+    state.host.push(json!({ "t": "restart" }));
+    Ok(Json(json!({ "message": "Redémarrage du serveur : les sessions seront à reprendre." })))
+}
+
+/// Ends the server, and with it every session and sync server it started.
+/// Sessions are written down first, to be offered again next time.
+pub async fn shutdown(State(state): State<Shared>) -> ApiResult {
+    agents::save_sessions(&state);
+    crate::log::info("Arrêt demandé");
+    tokio::spawn(async {
+        // After the answer has left.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        std::process::exit(0);
+    });
+    Ok(Json(json!({})))
 }
 
 #[derive(Deserialize)]

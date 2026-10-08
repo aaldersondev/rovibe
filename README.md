@@ -30,7 +30,7 @@ A desktop app for building Roblox games with several coding agents working side 
 - **Notifications**: Windows tells you when an agent needs you or is done, if the window isn't in front (configurable).
 - **Layout**: panes are reordered by dragging their header, and shown all side by side or one at a time with tabs. Interrupted sessions wait in a strip of their own.
 - **Protected project**: for a live game. Studio shows the changes before each sync instead of applying them, and an agent needs your approval in the app before connecting the sync, as it does to publish.
-- **Background**: closing the window while sessions run offers to let them carry on. The app stays by the clock; its icon, or starting it again, brings the window back. With no session running, closing quits.
+- **Background**: the agents run in a server apart from the window. Closing the window while sessions run offers to let them carry on; a window that crashes or is updated finds them again. The app stays by the clock; its icon, or starting it again, brings the window back. With no session running, closing quits.
 - **Getting started**: a checklist of what RoVibe needs on the PC (Claude Code or Codex, git, the Studio plugin…), what is in place and how to get the rest. It opens on first launch.
 - **Language**: the interface comes in French and English; it follows the system's language, or the one chosen in the settings. Server messages and tool descriptions remain in French.
 - **Agent status**: each pane says whether the agent is working, waiting for an answer or done; the taskbar button flashes when one is waiting.
@@ -65,7 +65,16 @@ The installer (NSIS, per user, no administrator rights) puts the app in `%LOCALA
 
 ### Updates
 
-On start, the app reads `latest.json` from the latest GitHub release of the repository named in `app/tauri.conf.json`. If a newer version exists, a banner offers to install it; the app restarts and Claude Code sessions resume. Each installer is signed with the key `%USERPROFILE%\.tauri\rovibe.key`: without it, installed copies accept no update. Keep it out of the repository, and back it up.
+On start, the app reads `latest.json` from the latest GitHub release of the repository named in `app/tauri.conf.json`. If a newer version exists, a banner offers to install it. Only the window restarts: the server that runs the agents is a process of its own, started from a copy kept with the settings, so sessions carry on through the update. The new version takes over once they are closed, or at once on request. Each installer is signed with the key `%USERPROFILE%\.tauri\rovibe.key`: without it, installed copies accept no update. Keep it out of the repository, and back it up.
+
+### Releases built by GitHub
+
+Pushing a tag `v1.2.3` runs `.github/workflows/release.yml`: it builds the installer of that version and publishes it with `latest.json`. It needs the update key as the repository secret `TAURI_SIGNING_PRIVATE_KEY`; without it, the tag builds nothing. Run by hand from the Actions tab, the workflow only tries the build and keeps the installer as an artifact.
+
+```powershell
+gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe < $env:USERPROFILE\.tauriovibe.key
+git tag v0.9.0; git push origin v0.9.0
+```
 
 ### Windows signing (Authenticode)
 
@@ -98,9 +107,10 @@ A certificate is bought from an authority (Certum, Sectigo, DigiCert…) or rent
 ```powershell
 cd ui; npm run build; cd ..     # the server embeds the interface
 cargo test -p rovibe-core
+cd ui; npx playwright install chromium; npm test   # the interface, in a real browser
 ```
 
-Tests cover what can lose work: importing a place, file locks between agents, going back in git, merging an agent's branch, choosing the Studio to act on, reading the code checkers, and key codes. They also run on every push (`.github/workflows/ci.yml`).
+Tests cover what can lose work: importing a place, file locks between agents, going back in git, merging an agent's branch, choosing the Studio to act on, reading the code checkers, and key codes. The interface tests start a server of their own, on another port and with an empty settings folder, and replay what once broke: terminals overflowing their pane, panes resizing each other, a refused setting blocking the next ones, French left in the English interface. Everything runs on every push (`.github/workflows/ci.yml`).
 
 ## Architecture
 

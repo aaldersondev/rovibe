@@ -30,7 +30,7 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **Notifications** : Windows te prévient quand un agent t'attend ou a fini, si la fenêtre n'est pas devant (réglable).
 - **Disposition** : les panneaux se réordonnent en les glissant par leur en-tête, et s'affichent tous côte à côte ou un seul à la fois avec des onglets. Les sessions interrompues attendent dans une bande à part.
 - **Projet protégé** : pour un jeu en ligne. Studio montre les changements avant chaque synchro au lieu de les appliquer d'office, et un agent doit obtenir ton accord dans l'app avant de connecter la synchro, comme pour publier.
-- **Arrière-plan** : fermer la fenêtre pendant que des sessions tournent propose de les laisser continuer. L'app reste près de l'horloge ; son icône, ou un nouveau lancement, rouvre la fenêtre. Sans session en cours, fermer quitte.
+- **Arrière-plan** : les agents tournent dans un serveur à part de la fenêtre. Fermer la fenêtre pendant que des sessions tournent propose de les laisser continuer ; une fenêtre qui plante ou qui est mise à jour les retrouve. L'app reste près de l'horloge ; son icône, ou un nouveau lancement, rouvre la fenêtre. Sans session en cours, fermer quitte.
 - **Premiers pas** : une liste de ce dont RoVibe a besoin sur le PC (Claude Code ou Codex, git, plugin Studio…), ce qui est en place et comment obtenir le reste. Elle s'ouvre au premier lancement.
 - **Langue** : l'interface existe en français et en anglais ; elle suit la langue du système, ou celle choisie dans les réglages. Les messages du serveur et les descriptions d'outils restent en français.
 - **État des agents** : chaque panneau indique si l'agent travaille, attend une réponse ou a fini ; la barre des tâches clignote quand l'un d'eux attend.
@@ -61,7 +61,16 @@ L'installeur (NSIS, par utilisateur, sans droits administrateur) place l'app dan
 
 ### Mises à jour
 
-Au démarrage, l'app lit `latest.json` sur la dernière release GitHub du dépôt indiqué dans `app/tauri.conf.json`. Si une version plus récente existe, un bandeau propose de l'installer ; l'app se relance et les sessions Claude Code reprennent. Chaque installeur est signé avec la clé `%USERPROFILE%\.tauri\rovibe.key` : sans elle, aucune mise à jour n'est acceptée par les copies installées. Ne la mets pas dans le dépôt, et sauvegarde-la.
+Au démarrage, l'app lit `latest.json` sur la dernière release GitHub du dépôt indiqué dans `app/tauri.conf.json`. Si une version plus récente existe, un bandeau propose de l'installer. Seule la fenêtre redémarre : le serveur qui fait tourner les agents est un processus à part, lancé depuis une copie rangée avec les réglages, et les sessions continuent pendant la mise à jour. La nouvelle version prend le relais quand elles sont fermées, ou tout de suite sur demande. Chaque installeur est signé avec la clé `%USERPROFILE%\.tauri\rovibe.key` : sans elle, aucune mise à jour n'est acceptée par les copies installées. Ne la mets pas dans le dépôt, et sauvegarde-la.
+
+### Releases construites par GitHub
+
+Pousser un tag `v1.2.3` lance `.github/workflows/release.yml` : il construit l'installeur de cette version et le publie avec `latest.json`. Il lui faut la clé de mise à jour dans le secret du dépôt `TAURI_SIGNING_PRIVATE_KEY` ; sans elle, le tag ne construit rien. Lancé à la main depuis l'onglet Actions, il essaie seulement la construction et garde l'installeur en artefact.
+
+```powershell
+gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe < $env:USERPROFILE\.tauriovibe.key
+git tag v0.9.0; git push origin v0.9.0
+```
 
 ### Signature Windows (Authenticode)
 
@@ -94,9 +103,10 @@ Un certificat s'achète auprès d'une autorité (Certum, Sectigo, DigiCert…) o
 ```powershell
 cd ui; npm run build; cd ..     # le serveur embarque l'interface
 cargo test -p rovibe-core
+cd ui; npx playwright install chromium; npm test   # l'interface, dans un vrai navigateur
 ```
 
-Les tests couvrent ce qui peut faire perdre du travail : l'import d'une place, les verrous de fichiers entre agents, le retour arrière git, le choix du Studio visé, la lecture des vérificateurs de code et les codes de touches. Ils tournent aussi sur chaque push (`.github/workflows/ci.yml`).
+Les tests couvrent ce qui peut faire perdre du travail : l'import d'une place, les verrous de fichiers entre agents, le retour arrière git, le choix du Studio visé, la lecture des vérificateurs de code et les codes de touches. Les tests d'interface lancent leur propre serveur, sur un autre port et avec un dossier de réglages vide, et rejouent ce qui a déjà cassé : terminaux qui débordent de leur panneau, panneaux qui se redimensionnent entre eux, réglage refusé qui bloque les suivants, français resté dans l'interface anglaise. Tout tourne sur chaque push (`.github/workflows/ci.yml`).
 
 ## Architecture
 

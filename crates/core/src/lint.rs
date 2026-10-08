@@ -30,6 +30,11 @@ pub struct Diagnostic {
 
 /// Shipped next to the app, or whatever the user has on their PATH.
 fn tools_dir() -> Option<PathBuf> {
+    // The server may run from a copy of itself, with the tools left where
+    // the app was installed.
+    if let Some(dir) = std::env::var_os("ROVIBE_TOOLS_DIR") {
+        return Some(PathBuf::from(dir));
+    }
     Some(std::env::current_exe().ok()?.parent()?.join("tools"))
 }
 

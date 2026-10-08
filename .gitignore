@@ -3,3 +3,5 @@ node_modules/
 ui/dist/
 dist/
 app/gen/
+ui/test-results/
+ui/playwright-report/

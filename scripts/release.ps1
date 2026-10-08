@@ -14,17 +14,27 @@ param(
     [string]$Notes = "",
     # Extra Tauri config merged in, e.g. app\tauri.test.conf.json.
     [string]$Config = "",
-    [string]$Repo = "aaldersondev/rovibe"
+    [string]$Repo = "aaldersondev/rovibe",
+    # Builds the installer only: no update signature, hence no key needed and
+    # nothing an installed copy would accept as an update. To try the build.
+    [switch]$Unsigned
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
+# The key that signs updates: given by the environment where the release is
+# built by a machine, read from the user's own file otherwise.
 $key = "$env:USERPROFILE\.tauri\rovibe.key"
-if (-not (Test-Path $key)) { throw "Clé de signature introuvable : $key" }
+if (-not $Unsigned -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    if (-not (Test-Path $key)) { throw "Clé de signature introuvable : $key" }
+    $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $key -Raw
+}
 # A running copy from dist\RoVibe locks the sync server this script replaces.
 if (Get-Process rovibe, rovibe-sync -ErrorAction SilentlyContinue) { throw "Ferme RoVibe avant de construire une release" }
 
 # The UI is embedded in the binary and the sync server ships beside it.
 Push-Location "$root\ui"; npm install --no-fund --no-audit; npm run build; Pop-Location
+# The bundler itself, on a machine that never built the app.
+if (-not (Test-Path "$root\node_modules\@tauri-apps\cli")) { npm install --prefix $root --no-fund --no-audit }
 cargo build --release --manifest-path "$root\vendor\sync\Cargo.toml"
 New-Item -ItemType Directory -Force "$root\dist\RoVibe" | Out-Null
 Copy-Item "$root\vendor\sync\target\release\rojo.exe" "$root\dist\RoVibe\rovibe-sync.exe" -Force
@@ -45,6 +55,11 @@ Copy-Item "$root\target\release\rovibe-cli.exe" "$root\dist\RoVibe\rovibe-cli.ex
 
 $configs = @()
 if ($Config) { $configs += @('--config', $Config) }
+if ($Unsigned) {
+    $plainConf = Join-Path ([IO.Path]::GetTempPath()) "rovibe-unsigned.conf.json"
+    [IO.File]::WriteAllText($plainConf, '{ "bundle": { "createUpdaterArtifacts": false } }', $plain)
+    $configs += @('--config', $plainConf)
+}
 
 # Authenticode. Tauri runs the command on the app, then on the installer,
 # before it computes the update signature of the latter.
@@ -58,8 +73,7 @@ if ($signing) {
     $configs += @('--config', $signConf)
 }
 
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $key -Raw
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "" }
 Push-Location "$root\app"
 npx --prefix $root tauri build @configs
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "tauri build a échoué" }
@@ -70,6 +84,11 @@ $installer = Get-ChildItem $bundle -Filter "RoVibe_${Version}_x64-setup.exe" | S
 $out = "$root\dist\release\$Version"
 New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item $installer.FullName $out -Force
+
+if ($Unsigned) {
+    Write-Host "Installeur construit dans $out, sans signature de mise à jour : à essayer, pas à publier."
+    exit 0
+}
 
 $feed = [ordered]@{
     version   = $Version

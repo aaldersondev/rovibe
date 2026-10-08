@@ -101,6 +101,12 @@ impl Handle {
 /// Settings live under Roaming, apart from the program, which the installer
 /// puts in `%LOCALAPPDATA%\RoVibe`.
 pub fn data_dir() -> anyhow::Result<PathBuf> {
+    // Tests run a server of their own, away from the user's projects.
+    if let Some(dir) = std::env::var_os("ROVIBE_DATA_DIR") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir)?;
+        return Ok(dir);
+    }
     let dir = dirs::data_dir()
         .ok_or_else(|| anyhow::anyhow!("no data directory"))?
         .join("RoVibe");
@@ -190,6 +196,11 @@ fn router(state: Shared) -> Router {
         .route("/api/projects/{id}/bind", post(api::bind_project))
         .route("/api/projects/{id}/protect", post(api::protect_project))
         .route("/api/window", post(api::window_request))
+        .route("/api/host/events", get(api::host_events))
+        .route("/api/host/update", post(api::host_update))
+        .route("/api/host/pending", post(api::host_pending))
+        .route("/api/host/restart", post(api::host_restart))
+        .route("/api/shutdown", post(api::shutdown))
         .route(
             "/api/projects/{id}/prompts",
             get(api::get_prompts).put(api::put_prompts),
@@ -229,6 +240,7 @@ fn router(state: Shared) -> Router {
 
     Router::new()
         .merge(private)
+        .route("/api/ping", get(api::ping))
         .route("/mcp/{token}/{project}", post(mcp::handler))
         .route("/mcp/{token}/{project}/{session}", post(mcp::session_handler))
         .route("/hook/{token}/{session}", post(agents::hook))
@@ -236,6 +248,28 @@ fn router(state: Shared) -> Router {
         .fallback(ui)
         .layer(middleware::from_fn_with_state(state.clone(), local_only))
         .with_state(state)
+}
+
+/// Copies what the window's program needs to know into the log it reads:
+/// the same events, whether that program is this process or another.
+fn forward_to_host(state: &Shared) {
+    let mut attention = state.attention.subscribe();
+    let mut notices = state.notices.subscribe();
+    let mut window = state.window.subscribe();
+    let mut install = state.install_update.subscribe();
+    let state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let event = tokio::select! {
+                Ok(title) = attention.recv() => serde_json::json!({ "t": "attention", "title": title }),
+                Ok(notice) = notices.recv() => serde_json::json!({ "t": "notice", "title": notice.title, "body": notice.body }),
+                Ok(action) = window.recv() => serde_json::json!({ "t": "window", "action": action }),
+                Ok(()) = install.recv() => serde_json::json!({ "t": "install" }),
+                else => break,
+            };
+            state.host.push(event);
+        }
+    });
 }
 
 /// Binds the server and runs it in the background. Fails if the port is taken,
@@ -246,7 +280,9 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
     log::info(format!("RoVibe {version} démarre, port {port}, réglages dans {}", data_dir.display()));
 
     // Before the projects are read: their folder may change name here.
-    legacy::move_home(&projects::documents_home(), &data_dir);
+    if std::env::var_os("ROVIBE_DATA_DIR").is_none() {
+        legacy::move_home(&projects::documents_home(), &data_dir);
+    }
 
     let token = load_token(&data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -269,6 +305,7 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
 
     agents::load_dormant(&state);
     api::replace_old_plugin(&state);
+    forward_to_host(&state);
 
     Ok(Handle {
         state,

@@ -69,6 +69,9 @@ interface State {
   approvals: { id: number; project_id: string; requester: string; request: string }[];
   /** Version of an update waiting to be installed, if any. */
   update: string | null;
+  /** Version already installed, which this older server keeps from showing
+   *  because sessions still run on it. */
+  pending: string | null;
   dormant: Dormant[];
   /** Whether the WSL distribution for isolated Claude Code sessions exists. */
   isolation: boolean;
@@ -1696,8 +1699,31 @@ function renderRequests(current: State) {
       ? h(
           "div",
           { class: "request update" },
-          h("span", {}, `RoVibe ${current.update} est disponible. L'installer redémarre l'app ; tes sessions Claude Code seront proposées à la reprise.`),
+          h("span", {}, `RoVibe ${current.update} est disponible. L'installer redémarre la fenêtre ; les sessions en cours continuent.`),
           h("button", { class: "primary", onclick: () => run(() => api("/api/update", "POST")) }, "Installer et redémarrer"),
+        )
+      : "",
+    current.pending
+      ? h(
+          "div",
+          { class: "request update" },
+          h(
+            "span",
+            {},
+            `RoVibe ${current.pending} est installé. Tes sessions tournent encore sur la version précédente : la nouvelle prendra le relais quand elles seront fermées, ou tout de suite si tu redémarres.`,
+          ),
+          h(
+            "button",
+            {
+              class: "primary",
+              onclick: () => {
+                if (ask("Redémarrer maintenant ? Les sessions en cours seront interrompues, et proposées à la reprise.")) {
+                  void run(() => api("/api/host/restart", "POST"));
+                }
+              },
+            },
+            "Redémarrer maintenant",
+          ),
         )
       : "",
     ...current.approvals.map((approval) => {
@@ -1711,7 +1737,7 @@ function renderRequests(current: State) {
       );
     }),
   );
-  requests.hidden = current.approvals.length === 0 && !current.update;
+  requests.hidden = current.approvals.length === 0 && !current.update && !current.pending;
 }
 
 /** `grid` shows every session of the project side by side; `tabs` one at a
@@ -2303,6 +2329,20 @@ function listen() {
   };
   socket.onclose = () => setTimeout(listen, 1500);
 }
+
+// For the automated tests of the interface: what a terminal shows, which
+// lives on a canvas and nowhere in the page.
+(window as unknown as { rovibeTest: unknown }).rovibeTest = {
+  screen(title: string) {
+    const session = state?.sessions.find((candidate) => candidate.title === title);
+    const terminal = session && panes.get(session.id)?.terminal;
+    if (!terminal) return null;
+    const buffer = terminal.buffer.active;
+    const lines: string[] = [];
+    for (let row = 0; row < buffer.length; row++) lines.push(buffer.getLine(row)?.translateToString(true) ?? "");
+    return { cols: terminal.cols, rows: terminal.rows, text: lines.join("\n").trimEnd() };
+  },
+};
 
 grid.append(empty);
 app.append(h("div", { class: "shell" }, rail, h("main", { class: "main" }, bar, requests, settingsPage, resumeBar, tabsBar, grid, composer)), dialog, toasts);
