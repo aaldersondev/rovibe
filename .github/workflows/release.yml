@@ -1,0 +1,75 @@
+name: Release
+
+# Pushing a tag `v1.2.3` builds the installer of that version and publishes
+# it with the file installed copies read to update themselves.
+#
+# It needs the key that signs updates, as the repository secret
+# TAURI_SIGNING_PRIVATE_KEY (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD if the key
+# has one). Without it the tag builds nothing: an unsigned update would be
+# refused by every installed copy.
+#
+# Run by hand, it only tries the build and keeps the installer as an artifact.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide what to build
+        id: plan
+        shell: pwsh
+        run: |
+          $tagged = $env:GITHUB_REF_TYPE -eq 'tag'
+          $version = if ($tagged) { $env:GITHUB_REF_NAME.TrimStart('v') } else { (Get-Content app/tauri.conf.json -Raw | ConvertFrom-Json).version }
+          $mode = 'try'
+          if ($tagged) {
+            gh release view "v$version" --repo $env:GITHUB_REPOSITORY *> $null
+            if ($LASTEXITCODE -eq 0) { $mode = 'skip'; Write-Host "::notice::La release v$version existe déjà : rien à faire." }
+            elseif (-not $env:TAURI_SIGNING_PRIVATE_KEY) { $mode = 'skip'; Write-Host "::warning::Secret TAURI_SIGNING_PRIVATE_KEY absent : la release v$version n'est pas construite." }
+            else { $mode = 'publish' }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "mode=$mode" >> $env:GITHUB_OUTPUT
+          exit 0
+      - uses: actions/setup-node@v4
+        if: steps.plan.outputs.mode != 'skip'
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        if: steps.plan.outputs.mode != 'skip'
+        with:
+          workspaces: |
+            . -> target
+            vendor/sync -> target
+      - name: Build the installer
+        if: steps.plan.outputs.mode == 'publish'
+        shell: powershell
+        run: .\scripts\release.ps1 ${{ steps.plan.outputs.version }}
+      - name: Try the build
+        if: steps.plan.outputs.mode == 'try'
+        shell: powershell
+        run: .\scripts\release.ps1 ${{ steps.plan.outputs.version }} -Unsigned
+      - name: Publish
+        if: steps.plan.outputs.mode == 'publish'
+        shell: pwsh
+        run: |
+          $out = "dist/release/${{ steps.plan.outputs.version }}"
+          gh release create "v${{ steps.plan.outputs.version }}" (Get-ChildItem "$out/*.exe").FullName "$out/latest.json" --repo $env:GITHUB_REPOSITORY --title "RoVibe ${{ steps.plan.outputs.version }}" --generate-notes
+      - name: Keep the installer that was tried
+        if: steps.plan.outputs.mode == 'try'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-not-for-release
+          path: dist/release/${{ steps.plan.outputs.version }}/*.exe

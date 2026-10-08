@@ -22,3 +22,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test the server
         run: cargo test -p rovibe-core
+      # The interface, in a real browser, against a server started for it.
+      - name: Test the interface
+        working-directory: ui
+        run: |
+          npx playwright install chromium
+          npx playwright test
+      - name: Keep what the interface looked like when a test failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interface-test-results
+          path: ui/test-results

@@ -219,6 +219,9 @@ const EXACT: Record<string, string> = {
   "Ne plus me demander": "Don't ask again",
   Quitter: "Quit",
   "Installer et redémarrer": "Install and restart",
+  "Redémarrer maintenant": "Restart now",
+  "Redémarrer maintenant ? Les sessions en cours seront interrompues, et proposées à la reprise.":
+    "Restart now? Running sessions will be interrupted, and offered again.",
   Autoriser: "Allow",
   Refuser: "Refuse",
 
@@ -367,9 +370,10 @@ const WITH_VALUES: [string, string][] = [
   ["Supprimer la consigne « {} » ?", "Delete the prompt “{}”?"],
   ["Envoyer aux {} agents", "Send to {} agents"],
   ["{} sessions sont en cours", "{} sessions are running"],
+  ["RoVibe {} est disponible. L'installer redémarre la fenêtre ; les sessions en cours continuent.", "RoVibe {} is available. Installing it restarts the window; running sessions carry on."],
   [
-    "RoVibe {} est disponible. L'installer redémarre l'app ; tes sessions Claude Code seront proposées à la reprise.",
-    "RoVibe {} is available. Installing it restarts the app; your Claude Code sessions will be offered again.",
+    "RoVibe {} est installé. Tes sessions tournent encore sur la version précédente : la nouvelle prendra le relais quand elles seront fermées, ou tout de suite si tu redémarres.",
+    "RoVibe {} is installed. Your sessions still run on the previous version: the new one takes over once they are closed, or right away if you restart.",
   ],
   ["{} agents attendent ta réponse", "{} agents are waiting for you"],
   ["{} sessions à reprendre", "{} sessions to resume"],
