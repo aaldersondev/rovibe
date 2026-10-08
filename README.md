@@ -72,7 +72,7 @@ On start, the app reads `latest.json` from the latest GitHub release of the repo
 Pushing a tag `v1.2.3` runs `.github/workflows/release.yml`: it builds the installer of that version and publishes it with `latest.json`. It needs the update key as the repository secret `TAURI_SIGNING_PRIVATE_KEY`; without it, the tag builds nothing. Run by hand from the Actions tab, the workflow only tries the build and keeps the installer as an artifact.
 
 ```powershell
-gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe < $env:USERPROFILE\.tauriovibe.key
+Get-Content $env:USERPROFILE\.tauri\rovibe.key -Raw | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe
 git tag v0.9.0; git push origin v0.9.0
 ```
 
