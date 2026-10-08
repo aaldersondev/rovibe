@@ -333,7 +333,9 @@ fn build_command(
                 let mut command = CommandBuilder::new("wsl.exe");
                 command.args(["-d", isolation::DISTRO, "--cd"]);
                 command.arg(isolation::mount_point(project));
-                command.args(["--", isolation::CLAUDE]);
+                command.args(["--", "env"]);
+                command.args(isolation::proxy_env(state));
+                command.arg(isolation::CLAUDE);
                 command
             } else {
                 command_for(&locate("claude")?)

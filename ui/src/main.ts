@@ -414,7 +414,19 @@ interface BankAsset {
   class: string;
   instances: number;
   bytes: number;
+  collection: string;
   thumb: boolean;
+}
+
+interface StoreItem {
+  id: number;
+  name: string;
+  creator: string;
+  verified: boolean;
+  votes: [number, number] | null;
+  triangles: number | null;
+  has_scripts: boolean;
+  thumbnail: string | null;
 }
 
 interface Change {
@@ -543,6 +555,8 @@ interface Settings {
   codex_model: string;
   projects_dir: string;
   publish_shortcut: string;
+  isolation_network: string;
+  isolation_hosts: string;
 }
 
 async function openSettingsDialog() {
@@ -554,7 +568,15 @@ async function openSettingsDialog() {
     codex_model: field("codex_model", "Celui de Codex"),
     projects_dir: field("projects_dir", "Documents\\Essaim"),
     publish_shortcut: field("publish_shortcut", "alt+p"),
+    isolation_network: h(
+      "select",
+      { name: "isolation_network" },
+      h("option", { value: "" }, "Restreint : l'API du modèle et les hôtes ci-dessous"),
+      h("option", { value: "open" }, "Ouvert : tout internet"),
+    ),
+    isolation_hosts: field("isolation_hosts", "ex. github.com *.githubusercontent.com"),
   };
+  fields.isolation_network.value = settings.isolation_network === "open" ? "open" : "";
 
   dialog.replaceChildren(
     h(
@@ -579,6 +601,13 @@ async function openSettingsDialog() {
         {},
         h("span", {}, "Raccourci « Publier sur Roblox » de Studio, si tu l'as changé. Touches séparées par +."),
         fields.publish_shortcut,
+      ),
+      h("label", {}, h("span", {}, "Réseau des agents isolés (Claude Code dans WSL)"), fields.isolation_network),
+      h(
+        "label",
+        {},
+        h("span", {}, "Hôtes en plus de l'API du modèle, en HTTPS. Un nom, ou *.domaine pour tout un domaine."),
+        fields.isolation_hosts,
       ),
       h(
         "div",
@@ -608,19 +637,60 @@ async function openLogDialog() {
 
 async function openBankDialog() {
   const bank = await api<{ dir: string; assets: BankAsset[] }>("/api/assets");
-  const filter = h("input", { type: "search", placeholder: "Filtrer par nom ou tag", autocomplete: "off" });
+  const reload = async () => {
+    bank.assets = (await api<{ assets: BankAsset[] }>("/api/assets")).assets;
+    draw();
+  };
+
+  // What the bank holds.
+  const filter = h("input", { type: "search", placeholder: "Filtrer par nom, tag ou collection", autocomplete: "off" });
+  const collections = h("select", { title: "Collection" });
+  const names = h("datalist", { id: "bank-collections" });
   const list = h("ul", { class: "bank" });
+  let collection = "";
 
   const draw = () => {
+    const known = [...new Set(bank.assets.map((asset) => asset.collection).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    if (collection && !known.includes(collection)) collection = "";
+    collections.replaceChildren(
+      h("option", { value: "" }, `Toutes les collections (${bank.assets.length})`),
+      ...known.map((name) =>
+        h("option", { value: name }, `${name} (${bank.assets.filter((asset) => asset.collection === name).length})`),
+      ),
+    );
+    collections.value = collection;
+    names.replaceChildren(...known.map((name) => h("option", { value: name })));
+
     const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
     const shown = bank.assets.filter((asset) => {
-      const haystack = `${asset.name} ${asset.tags.join(" ")} ${asset.class}`.toLowerCase();
+      if (collection && asset.collection !== collection) return false;
+      const haystack = `${asset.name} ${asset.tags.join(" ")} ${asset.class} ${asset.collection}`.toLowerCase();
       return words.every((word) => haystack.includes(word));
     });
 
     list.replaceChildren(
-      ...shown.map((asset) =>
-        h(
+      ...shown.map((asset) => {
+        const place = h("input", {
+          class: "collection",
+          value: asset.collection,
+          placeholder: "Sans collection",
+          title: "Collection de cet asset",
+          autocomplete: "off",
+        });
+        place.setAttribute("list", "bank-collections");
+        place.addEventListener("change", async () => {
+          try {
+            await api(`/api/assets/${asset.id}`, "PUT", { collection: place.value });
+            asset.collection = place.value.trim();
+            draw();
+          } catch (error) {
+            toast((error as Error).message, true);
+          }
+        });
+
+        return h(
           "li",
           {},
           asset.thumb
@@ -644,6 +714,7 @@ async function openBankDialog() {
             ),
             h("code", {}, `bank:${asset.id}`),
           ),
+          place,
           h(
             "button",
             {
@@ -662,8 +733,8 @@ async function openBankDialog() {
             },
             "Supprimer",
           ),
-        ),
-      ),
+        );
+      }),
     );
     if (shown.length === 0) {
       list.append(
@@ -671,28 +742,200 @@ async function openBankDialog() {
           "li",
           { class: "notice" },
           bank.assets.length === 0
-            ? "La banque est vide. Demande à un agent « enregistre Workspace.MonModele dans la banque », ou dépose des fichiers .rbxm dans le dossier ci-dessous."
+            ? "La banque est vide. Demande à un agent « enregistre Workspace.MonModele dans la banque », importe un pack, ou dépose des fichiers .rbxm dans le dossier ci-dessous."
             : "Aucun asset ne correspond.",
         ),
       );
     }
+    missing.hidden = !bank.assets.some((asset) => !asset.thumb);
   };
 
   filter.addEventListener("input", draw);
-  draw();
+  collections.addEventListener("change", () => {
+    collection = collections.value;
+    draw();
+  });
 
+  const missing = h(
+    "button",
+    {
+      title: "Chaque asset sans image est posé un instant dans la place ouverte dans Studio, photographié, puis retiré",
+      onclick: async () => {
+        missing.disabled = true;
+        missing.textContent = "Aperçus en cours…";
+        try {
+          const done = await api<{ made: number; failed: string[] }>("/api/assets/previews", "POST");
+          toast(`${done.made} aperçu(s) créé(s)${done.failed.length ? `, ${done.failed.length} impossible(s)` : ""}`);
+          for (const reason of done.failed.slice(0, 3)) toast(reason, true);
+          await reload();
+        } catch (error) {
+          toast((error as Error).message, true);
+        }
+        missing.disabled = false;
+        missing.textContent = "Créer les aperçus manquants";
+      },
+    },
+    "Créer les aperçus manquants",
+  );
+
+  const packPath = h("input", { placeholder: "Dossier du pack, ex. C:\\Packs\\Nature", autocomplete: "off" });
+  const packName = h("input", { placeholder: "Collection (facultatif)", autocomplete: "off" });
+  packName.setAttribute("list", "bank-collections");
+  const importer = h(
+    "form",
+    {
+      class: "pack",
+      onsubmit: async (event: Event) => {
+        event.preventDefault();
+        if (!packPath.value.trim()) return;
+        try {
+          const done = await api<{ imported: number }>("/api/assets/import", "POST", {
+            path: packPath.value,
+            collection: packName.value,
+          });
+          toast(`${done.imported} asset(s) importé(s)`);
+          packPath.value = "";
+          await reload();
+        } catch (error) {
+          toast((error as Error).message, true);
+        }
+      },
+    },
+    packPath,
+    packName,
+    h("button", { type: "submit" }, "Importer le pack"),
+  );
+
+  const local = h(
+    "div",
+    {},
+    h("div", { class: "pack" }, filter, collections, missing),
+    list,
+    names,
+    importer,
+    h(
+      "p",
+      { class: "notice" },
+      `Un pack est un dossier de fichiers .rbxm ou .rbxmx ; ses sous-dossiers deviennent des collections. Dossier de la banque : ${bank.dir}`,
+    ),
+  );
+
+  // The Creator Store, with pictures.
+  const query = h("input", { type: "search", placeholder: "Chercher dans le Creator Store (gratuits)", autocomplete: "off" });
+  const kind = h(
+    "select",
+    {},
+    h("option", { value: "model" }, "Modèles"),
+    h("option", { value: "mesh" }, "Meshes"),
+    h("option", { value: "decal" }, "Images"),
+    h("option", { value: "audio" }, "Sons"),
+  );
+  const results = h("ul", { class: "store" }, h("li", { class: "notice" }, "Tape une recherche."));
+
+  const searchStore = async (event: Event) => {
+    event.preventDefault();
+    if (!query.value.trim()) return;
+    results.replaceChildren(h("li", { class: "notice" }, "Recherche…"));
+    try {
+      const searched = kind.value;
+      const found = await api<{ items: StoreItem[] }>(
+        `/api/store?q=${encodeURIComponent(query.value)}&kind=${searched}`,
+      );
+      results.replaceChildren(
+        ...found.items.map((item) =>
+          h(
+            "li",
+            {},
+            item.thumbnail
+              ? h("img", { src: item.thumbnail, alt: "", loading: "lazy", referrerpolicy: "no-referrer" })
+              : h("span", { class: "blank" }),
+            h("strong", { title: item.name }, item.name),
+            h(
+              "small",
+              {},
+              [
+                `${item.creator}${item.verified ? " ✓" : ""}`,
+                item.votes ? `${item.votes[0]} % sur ${item.votes[1]}` : "",
+                item.triangles ? `${item.triangles} triangles` : "",
+              ]
+                .filter(Boolean)
+                .join(", "),
+            ),
+            searched === "model"
+              ? h("small", { class: item.has_scripts ? "warn" : "" }, item.has_scripts ? "Contient des scripts" : "Sans script")
+              : null,
+            h(
+              "button",
+              {
+                title: "Pose l'asset dans Workspace, scripts désactivés",
+                onclick: () =>
+                  run(async () => {
+                    const done = await api("/api/store/insert", "POST", {
+                      project_id: selected,
+                      asset: item.id,
+                      kind: searched,
+                    });
+                    return { message: (done.message ?? "Inséré").split("\n").slice(0, 2).join(" ") };
+                  }),
+              },
+              "Insérer dans Studio",
+            ),
+          ),
+        ),
+      );
+      if (found.items.length === 0) results.append(h("li", { class: "notice" }, "Aucun asset gratuit ne correspond."));
+    } catch (error) {
+      results.replaceChildren(h("li", { class: "notice" }, (error as Error).message));
+    }
+  };
+
+  const store = h(
+    "div",
+    { hidden: true },
+    h("form", { class: "pack", onsubmit: searchStore }, query, kind, h("button", { type: "submit" }, "Chercher")),
+    results,
+    h(
+      "p",
+      { class: "notice" },
+      "Les scripts d'un asset du Store sont désactivés à l'insertion : un modèle gratuit peut cacher une porte dérobée.",
+    ),
+  );
+
+  const tabs = [
+    { label: "Ma banque", view: local },
+    { label: "Creator Store", view: store },
+  ].map(({ label, view }) => {
+    const tab = h(
+      "button",
+      {
+        class: "quiet",
+        onclick: () => {
+          local.hidden = view !== local;
+          store.hidden = view !== store;
+          for (const other of tabs) other.removeAttribute("aria-current");
+          tab.setAttribute("aria-current", "true");
+        },
+      },
+      label,
+    );
+    return tab;
+  });
+  tabs[0].setAttribute("aria-current", "true");
+
+  draw();
   dialog.replaceChildren(
     h("h2", {}, "Banque d'assets"),
     h(
       "p",
       { class: "notice" },
-      "Modèles réutilisables d'un projet à l'autre. Les agents les trouvent avec asset_search et les posent avec asset_insert, tout comme les assets gratuits du Creator Store.",
+      "Modèles réutilisables d'un projet à l'autre. Les agents les trouvent avec asset_search, les regardent avec asset_preview et les posent avec asset_insert, tout comme les assets gratuits du Creator Store.",
     ),
-    h("label", {}, filter),
-    list,
-    h("p", { class: "notice" }, `Dossier : ${bank.dir}`),
+    h("div", { class: "tabs" }, ...tabs),
+    local,
+    store,
     h("div", { class: "actions" }, h("button", { onclick: () => dialog.close() }, "Fermer")),
   );
+  widen();
   dialog.showModal();
 }
 

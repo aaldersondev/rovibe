@@ -724,3 +724,92 @@ dialog label.check {
     display: none;
   }
 }
+
+/* Asset bank: collections, packs and the store */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs button[aria-current] {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--honey);
+  border-radius: 0;
+}
+
+.pack {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pack input {
+  flex: 1;
+  min-width: 0;
+}
+
+.pack select,
+.pack button {
+  flex: none;
+}
+
+.bank input.collection {
+  flex: none;
+  width: 150px;
+}
+
+.store {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 52vh;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.store li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.store li.notice {
+  grid-column: 1 / -1;
+  border: 0;
+}
+
+.store img,
+.store .blank {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 4px;
+  object-fit: contain;
+  background: var(--deck);
+}
+
+.store strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.store small {
+  color: var(--muted);
+}
+
+.store small.warn {
+  color: var(--honey);
+}
+
+.store button {
+  margin-top: auto;
+}

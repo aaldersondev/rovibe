@@ -2,7 +2,8 @@
 #
 # An agent started there sees one Windows folder, its project, and nothing
 # else of the PC: drives aren't mounted, Windows programs can't be launched,
-# and its user has no way to become root. Its network access is not limited.
+# and its user has no way to become root. The app closes the network to that
+# user each time it starts an agent, except for the model's API (iptables).
 #
 # Run once. Downloads Ubuntu (about 350 MB) and Claude Code into it.
 $ErrorActionPreference = 'Stop'
@@ -19,7 +20,7 @@ $setup = @'
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl git ca-certificates >/dev/null
+apt-get install -y -qq curl git ca-certificates iptables python3 >/dev/null
 
 id agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash agent
 gpasswd -d agent sudo >/dev/null 2>&1 || true
