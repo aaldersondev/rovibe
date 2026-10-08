@@ -596,6 +596,58 @@ return function(env)
 		}
 	end
 
+	local STAGED = "EssaimApercu"
+
+	local function clearStage()
+		local previous = workspace:FindFirstChild(STAGED)
+		if previous then
+			previous:Destroy()
+		end
+	end
+
+	-- Lays a bank asset out high above the map, where nothing else is in the
+	-- picture, for the app to photograph it.
+	function methods.asset_stage(params)
+		clearStage()
+		local data = EncodingService:Base64Decode(buffer.fromstring(params.data))
+		local roots = SerializationService:DeserializeInstancesAsync(data)
+		if #roots == 0 then
+			error("L'asset ne contient aucune instance", 0)
+		end
+
+		local count = 0
+		for _, instance in collectInstances(roots) do
+			count += 1
+			if instance:IsA("BaseScript") then
+				(instance :: any).Enabled = false
+			end
+		end
+
+		local stage = Instance.new("Model")
+		stage.Name = STAGED
+		stage.Archivable = false
+		for _, root in roots do
+			root.Parent = stage
+		end
+		local visible = stage:FindFirstChildWhichIsA("BasePart", true) ~= nil
+		if visible then
+			stage:PivotTo(CFrame.new(0, 4000, 0))
+		end
+		stage.Parent = workspace
+
+		return {
+			path = "game.Workspace." .. STAGED,
+			class = roots[1].ClassName,
+			count = count,
+			visible = visible,
+		}
+	end
+
+	function methods.asset_unstage()
+		clearStage()
+		return "ok"
+	end
+
 	function methods.camera_get()
 		local camera = workspace.CurrentCamera
 		local size = camera.ViewportSize

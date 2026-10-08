@@ -3,7 +3,8 @@
 //! Isolated Claude Code sessions run in a dedicated WSL distribution (created
 //! by `scripts/setup-isolation.ps1`) that mounts no Windows drive and can't
 //! start Windows programs. Before a session starts, the app mounts the one
-//! folder it may touch, its project, from the outside as root.
+//! folder it may touch, its project, from the outside as root, and closes the
+//! distribution's network to the agent's user except for the model's API.
 
 use std::{
     path::PathBuf,
@@ -24,6 +25,7 @@ pub const DISTRO: &str = "essaim";
 pub const CLAUDE: &str = "/home/agent/.local/bin/claude";
 const RELAY: &str = include_str!("../plugin/relay.py");
 const RELAY_PATH: &str = "/opt/essaim/relay.py";
+const HOSTS_PATH: &str = "/opt/essaim/allowed-hosts";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -41,6 +43,118 @@ fn config_dir() -> PathBuf {
 pub fn config_path(session_id: &str, what: &str) -> (PathBuf, String) {
     let name = format!("{session_id}-{what}.json");
     (config_dir().join(&name), format!("/home/agent/.essaim/{name}"))
+}
+
+/// Port, on the distribution's own loopback, of the proxy that is an
+/// isolated agent's only way out.
+pub fn proxy_port(state: &Shared) -> u16 {
+    state.port + 1
+}
+
+/// The script, run as root, that opens or closes the network for the agent's
+/// user. Rules live in the running distribution only, hence on every start.
+///
+/// Closed, that user may talk to the distribution's own loopback, where the
+/// relay and the proxy listen, and to nothing else: not even a DNS server,
+/// which would be a way to carry data out one question at a time.
+fn network_script(restricted: bool, hosts: &[String]) -> String {
+    let mut script = format!(
+        "mkdir -p /opt/essaim
+printf '%s\\n' {} > {HOSTS_PATH} && chmod 644 {HOSTS_PATH}\n",
+        hosts.iter().map(|host| format!("'{host}'")).collect::<Vec<_>>().join(" ")
+    );
+    script.push_str("uid=$(id -u agent) || exit 1\n");
+    script.push_str("for t in iptables ip6tables; do\n");
+    if restricted {
+        script.push_str("  command -v $t >/dev/null || { echo sans-pare-feu >&2; exit 3; }\n");
+    } else {
+        script.push_str("  command -v $t >/dev/null || continue\n");
+    }
+    script.push_str("  $t -N ESSAIM 2>/dev/null; $t -F ESSAIM || exit 1\n");
+    if restricted {
+        script.push_str(
+            "  $t -A ESSAIM -p udp --dport 53 -j REJECT && $t -A ESSAIM -p tcp --dport 53 -j REJECT \\\n    && $t -A ESSAIM -o lo -j ACCEPT && $t -A ESSAIM -j REJECT || exit 1\n",
+        );
+    }
+    script.push_str(
+        "  $t -C OUTPUT -m owner --uid-owner $uid -j ESSAIM 2>/dev/null || $t -A OUTPUT -m owner --uid-owner $uid -j ESSAIM || exit 1\n",
+    );
+    script.push_str("done\n");
+    script
+}
+
+/// Runs a script as root, fed through stdin: on a command line, wsl.exe
+/// would let a first shell expand its variables before the script sees them.
+async fn root_script(script: &str) -> Result<(), String> {
+    let mut command = Command::new("wsl.exe");
+    command
+        .args(["-d", DISTRO, "-u", "root", "--", "sh", "-s"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut running = command.spawn().map_err(|error| format!("WSL est introuvable : {error}"))?;
+    if let Some(mut stdin) = running.stdin.take() {
+        stdin.write_all(script.as_bytes()).await.map_err(|error| error.to_string())?;
+    }
+    let output = tokio::time::timeout(Duration::from_secs(60), running.wait_with_output())
+        .await
+        .map_err(|_| "WSL n'a pas répondu".to_owned())?
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
+async fn apply_network(state: &Shared) -> Result<(), String> {
+    let (restricted, hosts) = {
+        let settings = state.settings.lock().unwrap();
+        (settings.isolation_restricted(), settings.isolation_allowed_hosts())
+    };
+    root_script(&network_script(restricted, &hosts))
+        .await
+        .map_err(|error| {
+            if error.contains("sans-pare-feu") {
+                "le pare-feu de l'environnement isolé n'est pas installé : relance scripts\\setup-isolation.ps1, ou passe le réseau des agents isolés sur « ouvert » dans les réglages".to_owned()
+            } else {
+                error
+            }
+        })
+}
+
+/// Applies a change of the network settings to agents that are already
+/// running. One started while the network was open has no proxy to go
+/// through, so closing it cuts that agent off: the safe side to err on.
+pub fn refresh_network(state: &Shared) {
+    if !*state.wsl_relay.lock().unwrap() {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = apply_network(&state).await {
+            crate::log::warn(format!("Réseau de l'environnement isolé : {error}"));
+        }
+    });
+}
+
+/// Variables that send an isolated agent's HTTPS through the proxy. Without
+/// them it reaches nothing at all, which is the safe way to fail.
+pub fn proxy_env(state: &Shared) -> Vec<String> {
+    if !state.settings.lock().unwrap().isolation_restricted() {
+        return Vec::new();
+    }
+    let proxy = format!("http://127.0.0.1:{}", proxy_port(state));
+    vec![
+        format!("HTTPS_PROXY={proxy}"),
+        format!("https_proxy={proxy}"),
+        format!("HTTP_PROXY={proxy}"),
+        format!("http_proxy={proxy}"),
+        "NO_PROXY=127.0.0.1,localhost".to_owned(),
+        "no_proxy=127.0.0.1,localhost".to_owned(),
+    ]
 }
 
 async fn wsl(user: Option<&str>, script: &str) -> Result<String, String> {
@@ -124,6 +238,8 @@ async fn start_relay(state: &Shared) -> Result<(), String> {
     command
         .args(["-d", DISTRO, "-u", "root", "--", "python3", "-u", RELAY_PATH])
         .arg(state.port.to_string())
+        .arg(proxy_port(state).to_string())
+        .arg(HOSTS_PATH)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -146,6 +262,12 @@ async fn start_relay(state: &Shared) -> Result<(), String> {
             let Ok(request) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            if let Some(host) = request["refused"].as_str() {
+                crate::log::warn(format!(
+                    "Agent isolé : accès à {host} refusé, hors des hôtes autorisés (voir les réglages)"
+                ));
+                continue;
+            }
             let client = client.clone();
             let replies = replies.clone();
             tokio::spawn(async move {
@@ -202,6 +324,12 @@ pub async fn prepare(state: &Shared, project: &Project) -> Result<(), String> {
     .await
     .map_err(|error| format!("Le projet n'a pas pu être monté dans WSL : {error}"))?;
 
+    // Before any agent starts, and again each time: the rules don't survive
+    // a restart of the distribution, and the settings may have changed.
+    apply_network(state)
+        .await
+        .map_err(|error| format!("Le réseau de l'environnement isolé n'a pas pu être réglé : {error}"))?;
+
     let needed = !std::mem::replace(&mut *state.wsl_relay.lock().unwrap(), true);
     if needed {
         if let Err(error) = start_relay(state).await {
@@ -211,4 +339,27 @@ pub async fn prepare(state: &Shared, project: &Project) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_closed_network_leaves_the_agent_its_loopback_only() {
+        let hosts = vec!["*.anthropic.com".to_owned(), "claude.ai".to_owned()];
+        let closed = network_script(true, &hosts);
+        assert!(closed.contains("printf '%s\\n' '*.anthropic.com' 'claude.ai' > /opt/essaim/allowed-hosts"));
+        // DNS is refused before loopback is allowed: WSL's resolver sits on it.
+        let dns = closed.find("--dport 53 -j REJECT").unwrap();
+        let loopback = closed.find("-o lo -j ACCEPT").unwrap();
+        let rest = closed.find("-A ESSAIM -j REJECT").unwrap();
+        assert!(dns < loopback && loopback < rest);
+        // A distribution without a firewall must not start an agent.
+        assert!(closed.contains("exit 3"));
+
+        let open = network_script(false, &hosts);
+        assert!(open.contains("-F ESSAIM"));
+        assert!(!open.contains("REJECT") && !open.contains("exit 3"));
+    }
 }

@@ -210,6 +210,7 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Mots-clés. Vide = toute la banque locale." },
+                    "collection": { "type": "string", "description": "Limite la banque locale à une collection." },
                     "source": { "type": "string", "enum": ["all", "bank", "store"], "description": "Défaut all." },
                     "type": { "type": "string", "enum": ["model", "audio", "decal", "mesh"], "description": "Type cherché dans le Store, défaut model." },
                     "limit": { "type": "integer", "description": "Défaut 10, maximum 30." }
@@ -240,9 +241,21 @@ fn tools() -> Value {
                 "properties": {
                     "path": { "type": "string", "description": "Ex. `game.Workspace.Arbre`." },
                     "name": { "type": "string", "description": "Défaut : le nom de l'instance." },
-                    "tags": { "type": "array", "items": { "type": "string" } }
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "collection": { "type": "string", "description": "Collection où ranger l'asset, ex. `Nature`. Créée si elle n'existe pas." }
                 },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": "asset_preview",
+            "description": "Renvoie l'image d'aperçu d'un asset, pour juger de son apparence avant de l'insérer. Pour un asset de la banque sans aperçu, l'image est prise dans Studio.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "asset": { "type": "string", "description": "`bank:<id>` ou l'identifiant numérique d'un asset du Store." }
+                },
+                "required": ["asset"]
             }
         },
         {
@@ -420,18 +433,23 @@ async fn asset_search(args: &Value) -> Result<String, String> {
     let mut text = String::new();
     if source != "store" {
         text.push_str("Banque locale :\n");
-        let found = assets::search_bank(query, limit);
+        let found = assets::search_bank(query, args["collection"].as_str(), limit);
         if found.is_empty() {
             text.push_str("(aucun résultat)\n");
         }
         for asset in found {
             text.push_str(&format!(
-                "bank:{} | {} | {} | {} instances | {} Ko{}\n",
+                "bank:{} | {} | {} | {} instances | {} Ko{}{}\n",
                 asset.id,
                 asset.name,
                 if asset.class.is_empty() { "?" } else { &asset.class },
                 asset.instances,
                 asset.bytes / 1024,
+                if asset.collection.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | collection : {}", asset.collection)
+                },
                 if asset.tags.is_empty() {
                     String::new()
                 } else {
@@ -444,18 +462,107 @@ async fn asset_search(args: &Value) -> Result<String, String> {
     if source != "bank" && !query.is_empty() {
         text.push_str(&format!("\nCreator Store, {kind}, gratuits :\n"));
         let found = assets::search_store(query, kind, limit).await?;
-        text.push_str(if found.is_empty() { "(aucun résultat)\n" } else { &found });
+        if found.is_empty() {
+            text.push_str("(aucun résultat)\n");
+        }
+        for item in &found {
+            text.push_str(&store_line(item, kind));
+        }
+        text.push_str("\nasset_preview montre l'image d'un résultat avant de l'insérer.\n");
     }
     Ok(text)
 }
 
-async fn asset_insert(state: &Shared, project: Option<&Project>, args: &Value) -> Result<String, String> {
+fn store_line(item: &assets::StoreItem, kind: &str) -> String {
+    let mut line = format!(
+        "{} | {} | par {}{}",
+        item.id,
+        item.name,
+        item.creator,
+        if item.verified { " (vérifié)" } else { "" },
+    );
+    if let Some((percent, count)) = item.votes {
+        line.push_str(&format!(" | {percent} % positifs sur {count} votes"));
+    }
+    if kind == "model" {
+        if let Some(triangles) = item.triangles {
+            line.push_str(&format!(" | {triangles} triangles"));
+        }
+        line.push_str(if item.has_scripts { " | CONTIENT DES SCRIPTS" } else { " | sans script" });
+    }
+    line.push('\n');
+    line
+}
+
+fn asset_ref(args: &Value) -> Result<String, String> {
     // Accept a bare number as well: models tend to pass store ids unquoted.
-    let asset = match &args["asset"] {
-        Value::String(text) => text.trim().to_owned(),
-        Value::Number(number) => number.to_string(),
-        _ => return Err("`asset` est requis".into()),
+    match &args["asset"] {
+        Value::String(text) => Ok(text.trim().to_owned()),
+        Value::Number(number) => Ok(number.to_string()),
+        _ => Err("`asset` est requis".into()),
+    }
+}
+
+async fn asset_preview(state: &Shared, project: Option<&Project>, args: &Value) -> Result<Vec<Value>, String> {
+    let asset = asset_ref(args)?;
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    if let Some(id) = asset.strip_prefix("bank:") {
+        let path = assets::thumb_path(id).map_err(|error| error.to_string())?;
+        if !path.exists() {
+            let studio = studio::pick(state, project, "edit")?;
+            make_preview(&studio, id).await?;
+            state.notify();
+        }
+        let image = std::fs::read(path).map_err(|error| error.to_string())?;
+        return Ok(vec![
+            json!({ "type": "image", "data": encode(&image), "mimeType": "image/jpeg" }),
+            json!({ "type": "text", "text": format!("Aperçu de bank:{id}") }),
+        ]);
+    }
+
+    let id: u64 = asset
+        .parse()
+        .map_err(|_| "`asset` doit valoir `bank:<id>` ou un identifiant numérique du Store")?;
+    let image = assets::store_preview(id).await?;
+    Ok(vec![
+        json!({ "type": "image", "data": encode(&image), "mimeType": "image/png" }),
+        json!({ "type": "text", "text": format!("Aperçu de l'asset {id} du Creator Store") }),
+    ])
+}
+
+/// Photographs a bank asset that has no preview: it is laid out in the place
+/// away from everything, pictured, then taken out again. What Studio says
+/// about it (class, size) fills the gaps of a file imported by hand.
+pub async fn make_preview(studio: &studio::Studio, id: &str) -> Result<(), String> {
+    let data = assets::read(id).map_err(|error| format!("Asset de banque illisible : {error}"))?;
+    let staged = studio
+        .call(
+            "asset_stage",
+            json!({ "data": base64::engine::general_purpose::STANDARD.encode(data) }),
+            Duration::from_secs(60),
+        )
+        .await?;
+    let _ = assets::edit(
+        id,
+        assets::Edit {
+            class: staged["class"].as_str().map(str::to_owned),
+            instances: staged["count"].as_u64(),
+            ..assets::Edit::default()
+        },
+    );
+
+    let pictured = if staged["visible"] == true {
+        thumbnail(studio, staged["path"].as_str().unwrap_or_default(), id).await
+    } else {
+        Err("cet asset n'a rien à montrer dans la vue 3D".to_owned())
     };
+    let _ = studio.call("asset_unstage", json!({}), Duration::from_secs(10)).await;
+    pictured
+}
+
+pub async fn asset_insert(state: &Shared, project: Option<&Project>, args: &Value) -> Result<String, String> {
+    let asset = asset_ref(args)?;
 
     let mut params = json!({
         "parent": args["parent"],
@@ -504,8 +611,14 @@ async fn asset_save(state: &Shared, project: Option<&Project>, args: &Value) -> 
         .collect();
     let instances = exported["count"].as_u64().unwrap_or(0);
 
-    let id = assets::save(name, tags, exported["class"].as_str().unwrap_or_default(), instances, &data)
-        .map_err(|error| error.to_string())?;
+    let new = assets::NewAsset {
+        name,
+        tags,
+        class: exported["class"].as_str().unwrap_or_default(),
+        instances,
+        collection: args["collection"].as_str().unwrap_or_default(),
+    };
+    let id = assets::save(new, &data).map_err(|error| error.to_string())?;
 
     let preview = match thumbnail(&studio, args["path"].as_str().unwrap_or_default(), &id).await {
         Ok(()) => ", avec aperçu",
@@ -929,6 +1042,7 @@ async fn serve(
             let as_content = |text: String| vec![json!({ "type": "text", "text": text })];
             let outcome = match name {
                 "screenshot" => take_screenshot(&state, project.as_ref(), arguments).await,
+                "asset_preview" => asset_preview(&state, project.as_ref(), arguments).await,
                 "publish" => match project.as_ref() {
                     Some(project) => request_publish(&state, project, session.as_deref())
                         .await

@@ -462,6 +462,7 @@ pub async fn put_settings(
     }
     settings.save(&state.data_dir).map_err(|error| fail(error.to_string()))?;
     *state.settings.lock().unwrap() = settings;
+    isolation::refresh_network(&state);
     Ok(Json(json!({ "message": "Réglages enregistrés." })))
 }
 
@@ -574,6 +575,90 @@ pub async fn asset_thumb(Path(id): Path<String>) -> Response {
 
 pub async fn list_assets() -> Json<Value> {
     Json(json!({ "dir": assets::bank_dir(), "assets": assets::list() }))
+}
+
+pub async fn edit_asset(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(edit): Json<assets::Edit>,
+) -> ApiResult {
+    assets::edit(&id, edit).map_err(|error| fail(error.to_string()))?;
+    state.notify();
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+pub struct ImportAssets {
+    path: String,
+    #[serde(default)]
+    collection: String,
+}
+
+/// Copies a pack, a folder of model files, into the bank.
+pub async fn import_assets(State(state): State<Shared>, Json(body): Json<ImportAssets>) -> ApiResult {
+    let source = std::path::PathBuf::from(body.path.trim().trim_matches('"'));
+    let count = tokio::task::spawn_blocking(move || assets::import_folder(&source, &body.collection))
+        .await
+        .map_err(|error| fail(error.to_string()))?
+        .map_err(|error| fail(error.to_string()))?;
+    if count == 0 {
+        return Err(fail("Aucun fichier .rbxm ou .rbxmx dans ce dossier"));
+    }
+    state.notify();
+    Ok(Json(json!({ "imported": count })))
+}
+
+/// Pictures, in whichever Studio is open, the bank assets that have no
+/// preview yet. The place is left as it was.
+pub async fn asset_previews(State(state): State<Shared>) -> ApiResult {
+    let studio = crate::studio::pick(&state, None, "edit")
+        .map_err(|_| fail("Ouvre une place dans Studio : les aperçus y sont pris"))?;
+    let missing: Vec<String> = assets::list()
+        .into_iter()
+        .filter(|asset| !asset.thumb)
+        .map(|asset| asset.id)
+        .collect();
+
+    let (mut made, mut failed) = (0, Vec::new());
+    for id in &missing {
+        match mcp::make_preview(&studio, id).await {
+            Ok(()) => made += 1,
+            Err(error) => failed.push(format!("{id} : {error}")),
+        }
+    }
+    state.notify();
+    Ok(Json(json!({ "made": made, "failed": failed })))
+}
+
+#[derive(Deserialize)]
+pub struct StoreQuery {
+    q: String,
+    #[serde(default)]
+    kind: String,
+}
+
+pub async fn search_store(axum::extract::Query(query): axum::extract::Query<StoreQuery>) -> ApiResult {
+    let kind = if query.kind.is_empty() { "model" } else { &query.kind };
+    let items = assets::search_store(query.q.trim(), kind, 24).await.map_err(fail)?;
+    Ok(Json(json!({ "items": items })))
+}
+
+#[derive(Deserialize)]
+pub struct StoreInsert {
+    project_id: Option<String>,
+    asset: u64,
+    #[serde(default)]
+    kind: String,
+}
+
+/// Inserts a store asset in Studio from the app, the way an agent would:
+/// scripts disabled.
+pub async fn insert_store_asset(State(state): State<Shared>, Json(body): Json<StoreInsert>) -> ApiResult {
+    let project = body.project_id.as_deref().and_then(|id| state.project(id));
+    let kind = if body.kind.is_empty() { "model" } else { &body.kind };
+    let arguments = json!({ "asset": body.asset, "type": kind });
+    let message = mcp::asset_insert(&state, project.as_ref(), &arguments).await.map_err(fail)?;
+    Ok(Json(json!({ "message": message })))
 }
 
 pub async fn remove_asset(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {

@@ -5,6 +5,10 @@
 #   npx tauri signer generate --ci -w $env:USERPROFILE\.tauri\essaim.key
 # Whoever holds that key can ship updates to every installed copy: keep it
 # out of the repository.
+#
+# That key proves an update comes from us; it says nothing to Windows. For
+# Windows to show a publisher, set a code-signing certificate as described in
+# sign.ps1: the app, the sync server and the installer are then signed too.
 param(
     [Parameter(Mandatory)][string]$Version,
     [string]$Notes = "",
@@ -34,10 +38,24 @@ $plain = New-Object System.Text.UTF8Encoding $false
 $cargo = "$root\app\Cargo.toml"
 [IO.File]::WriteAllText($cargo, ((Get-Content $cargo -Raw) -replace '(?m)^version = "[^"]+"', "version = `"$Version`""), $plain)
 
+$configs = @()
+if ($Config) { $configs += @('--config', $Config) }
+
+# Authenticode. Tauri runs the command on the app, then on the installer,
+# before it computes the update signature of the latter.
+$signing = [bool]($env:ESSAIM_SIGN_THUMBPRINT -or $env:ESSAIM_SIGN_PFX)
+if ($signing) {
+    & "$PSScriptRoot\sign.ps1" "$root\dist\Essaim\essaim-sync.exe"
+    $command = @{ cmd = 'powershell'; args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSScriptRoot\sign.ps1", '%1') }
+    $signConf = Join-Path ([IO.Path]::GetTempPath()) "essaim-sign.conf.json"
+    [IO.File]::WriteAllText($signConf, (@{ bundle = @{ windows = @{ signCommand = $command } } } | ConvertTo-Json -Depth 6), $plain)
+    $configs += @('--config', $signConf)
+}
+
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $key -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 Push-Location "$root\app"
-if ($Config) { npx --prefix $root tauri build --config $Config } else { npx --prefix $root tauri build }
+npx --prefix $root tauri build @configs
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "tauri build a échoué" }
 Pop-Location
 
@@ -63,4 +81,10 @@ $feed = [ordered]@{
 [IO.File]::WriteAllText("$out\latest.json", $feed, $plain)
 
 Write-Host "Installeur et latest.json prêts dans $out"
+$signature = Get-AuthenticodeSignature "$out\$($installer.Name)"
+if ($signature.SignerCertificate) {
+    Write-Host "Signature Authenticode : $($signature.SignerCertificate.Subject) ($($signature.Status))"
+} else {
+    Write-Host "Installeur non signé (Authenticode) : Windows affichera « Éditeur inconnu ». Voir scripts\sign.ps1."
+}
 Write-Host "Pour publier : gh release create v$Version `"$out\$($installer.Name)`" `"$out\latest.json`" --repo $Repo --title `"Essaim $Version`""

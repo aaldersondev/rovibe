@@ -5,8 +5,8 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **Sessions multiples** : chaque agent tourne dans son propre terminal, côte à côte, dans le dossier du projet.
 - **Essaim Sync** : fork de [Rojo](https://github.com/rojo-rbx/rojo) (`vendor/sync`). Le code vit dans des fichiers, Studio le reflète en direct.
 - **Pont Studio** : le plugin garde un WebSocket ouvert vers l'app. Un appel d'outil fait un seul aller-retour local, sans polling.
-- **MCP `essaim`** : `run_luau` (edit, serveur et client), `get_tree`, `search`, `get_instance`, `get_console`, `check_code`, `publish`, `playtest`, `play_move`, `play_input`, `screenshot`, `asset_search`, `asset_insert`, `asset_save`, `sync_connect`, `studio_status`. Chaque session d'agent le reçoit automatiquement.
-- **Banque d'assets** : modèles enregistrés depuis Studio en `.rbxm`, chacun avec un aperçu photographié à l'enregistrement, dans `Documents\Essaim\Banque`, réutilisables d'un projet à l'autre, plus la recherche dans le Creator Store Roblox (assets gratuits). Les scripts d'un asset du Store sont désactivés à l'insertion.
+- **MCP `essaim`** : `run_luau` (edit, serveur et client), `get_tree`, `search`, `get_instance`, `get_console`, `check_code`, `publish`, `playtest`, `play_move`, `play_input`, `screenshot`, `asset_search`, `asset_preview`, `asset_insert`, `asset_save`, `sync_connect`, `studio_status`. Chaque session d'agent le reçoit automatiquement.
+- **Banque d'assets** : modèles enregistrés depuis Studio, chacun avec un aperçu photographié à l'enregistrement, dans `Documents\Essaim\Banque`, réutilisables d'un projet à l'autre et rangés en collections. Un pack (un dossier de `.rbxm` ou `.rbxmx`) s'importe d'un coup, ses sous-dossiers devenant des collections ; les aperçus manquants se créent ensuite dans Studio. L'onglet Creator Store cherche les assets gratuits de Roblox avec leurs images et les insère dans Studio ; un agent voit ces mêmes images avec `asset_preview`. Les scripts d'un asset du Store sont désactivés à l'insertion.
 - **Coordination entre agents** : un fichier modifié par un agent lui est réservé 10 minutes ; un autre agent, Claude Code ou Codex, qui tente de l'éditer est refusé avec le nom de celui qui le tient. Le refus vaut aussi pour une commande shell qui écrirait dans ce fichier, et pour celles qui réécrivent tout le dossier (`git reset --hard`, `git stash`, `git checkout .`) tant qu'un autre agent tient quelque chose. Les agents peuvent aussi réserver à l'avance (`claim_files`) et voir qui fait quoi (`agents_status`).
 - **État des agents** : chaque panneau indique si l'agent travaille, attend une réponse ou a fini ; la barre des tâches clignote quand l'un d'eux attend.
 - **Sessions persistantes** : les sessions Claude Code ouvertes à la fermeture de l'app sont proposées au lancement suivant ; « Reprendre » relance l'agent sur sa conversation.
@@ -38,9 +38,22 @@ L'installeur (NSIS, par utilisateur, sans droits administrateur) place l'app dan
 
 Au démarrage, l'app lit `latest.json` sur la dernière release GitHub du dépôt indiqué dans `app/tauri.conf.json`. Si une version plus récente existe, un bandeau propose de l'installer ; l'app se relance et les sessions Claude Code reprennent. Chaque installeur est signé avec la clé `%USERPROFILE%\.tauri\essaim.key` : sans elle, aucune mise à jour n'est acceptée par les copies installées. Ne la mets pas dans le dépôt, et sauvegarde-la.
 
+### Signature Windows (Authenticode)
+
+La clé ci-dessus ne dit rien à Windows : sans certificat de signature de code, l'installeur s'ouvre sur « Éditeur inconnu » et SmartScreen demande une confirmation. Avec un certificat, `release.ps1` signe l'app, le serveur de synchro et l'installeur (`scripts\sign.ps1`, qui appelle `signtool` du SDK Windows) dès qu'une de ces variables est définie :
+
+```powershell
+$env:ESSAIM_SIGN_THUMBPRINT = "<empreinte SHA-1>"   # certificat du magasin Windows : jeton USB ou HSM cloud
+# ou, pour un certificat encore en fichier :
+$env:ESSAIM_SIGN_PFX = "C:\chemin\certificat.pfx"; $env:ESSAIM_SIGN_PFX_PASSWORD = "..."
+.\scripts\release.ps1 0.3.0
+```
+
+Un certificat s'achète auprès d'une autorité (Certum, Sectigo, DigiCert…) ou se loue via Azure Trusted Signing ; un certificat OV ne fait disparaître l'avertissement SmartScreen qu'une fois la réputation acquise, un EV tout de suite. Sans variable, la release est construite non signée, comme aujourd'hui.
+
 ### Isolation
 
-`.\scripts\setup-isolation.ps1` crée une fois la distribution WSL « essaim ». Une session Claude Code lancée avec « Isolé » y tourne : seul le dossier du projet y est monté, aucun disque Windows n'est visible, les programmes Windows ne peuvent pas être lancés et l'utilisateur de l'agent ne peut pas devenir root. L'accès au réseau n'est pas restreint. Codex, lui, utilise son propre bac à sable (`--sandbox workspace-write`).
+`.\scripts\setup-isolation.ps1` crée une fois la distribution WSL « essaim ». Une session Claude Code lancée avec « Isolé » y tourne : seul le dossier du projet y est monté, aucun disque Windows n'est visible, les programmes Windows ne peuvent pas être lancés et l'utilisateur de l'agent ne peut pas devenir root. Son réseau est fermé : l'utilisateur de l'agent ne joint que la boucle locale de la distribution, où l'attendent le relais vers l'app et un proxy qui n'ouvre de tunnels HTTPS que vers l'API du modèle (`anthropic.com`, `claude.ai`, `claude.com`) et les hôtes ajoutés dans les réglages (par exemple `github.com`). Ni accès direct, ni DNS ; chaque hôte refusé est noté une fois dans le journal. Le réglage « Ouvert » rend tout internet. Si la distribution a été créée avant cette version, relance le script : il y installe `iptables`. Codex, lui, utilise son propre bac à sable (`--sandbox workspace-write`).
 
 ## Utiliser
 
