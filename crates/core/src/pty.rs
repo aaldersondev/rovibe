@@ -1,0 +1,439 @@
+use std::{
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Instant,
+};
+
+use bytes::Bytes;
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::sync::broadcast;
+
+use crate::{
+    agents, isolation,
+    state::{Project, Shared},
+};
+
+/// Replayed to a UI that attaches after the fact, e.g. after a page reload.
+const SCROLLBACK_BYTES: usize = 512 * 1024;
+
+/// Events Claude Code reports back to the app. PreToolUse is limited to the
+/// tools that write files: it is the one hook that can refuse an action.
+const HOOK_EVENTS: &[(&str, Option<&str>)] = &[
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("PreToolUse", Some("Edit|Write|MultiEdit|NotebookEdit")),
+    ("PostToolUse", Some("*")),
+    ("Notification", None),
+    ("Stop", None),
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Claude,
+    Codex,
+    Shell,
+}
+
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Claude => "Claude Code",
+            Kind::Codex => "Codex",
+            Kind::Shell => "Terminal",
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub project_id: String,
+    pub kind: Kind,
+    pub title: String,
+}
+
+pub struct Status {
+    /// `starting`, `working`, `waiting` (needs the user) or `idle` (turn over).
+    pub state: &'static str,
+    pub detail: String,
+    pub since: Instant,
+}
+
+/// What to start. `resume` carries the agent's own conversation id when a
+/// session from a previous run of the app is being brought back.
+pub struct Launch {
+    pub kind: Kind,
+    pub skip_permissions: bool,
+    pub title: Option<String>,
+    pub resume: Option<String>,
+    /// Confine the agent to its project.
+    pub isolated: bool,
+    /// The agent runs inside the isolation distribution, which
+    /// `isolation::prepare` has made ready for this project.
+    pub in_wsl: bool,
+}
+
+pub struct Session {
+    pub info: SessionInfo,
+    pub exited: AtomicBool,
+    pub skip_permissions: bool,
+    pub isolated: bool,
+    /// The agent's own conversation id, needed to resume it later.
+    pub agent_id: Mutex<Option<String>>,
+    /// Whether the agent ever received a prompt: one that didn't has no
+    /// conversation on disk and can't be resumed.
+    pub used: AtomicBool,
+    pub status: Mutex<Status>,
+    master: Mutex<Box<dyn MasterPty + Send>>,
+    writer: Mutex<Box<dyn Write + Send>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    scrollback: Mutex<Vec<u8>>,
+    output: broadcast::Sender<Bytes>,
+}
+
+impl Session {
+    /// Returns everything printed so far together with a receiver for what
+    /// comes next. Both are taken under the scrollback lock, which the reader
+    /// thread also holds while publishing, so no byte is lost or duplicated.
+    pub fn attach(&self) -> (Bytes, broadcast::Receiver<Bytes>) {
+        let scrollback = self.scrollback.lock().unwrap();
+        (Bytes::copy_from_slice(&scrollback), self.output.subscribe())
+    }
+
+    pub fn write(&self, data: &[u8]) {
+        let mut writer = self.writer.lock().unwrap();
+        let _ = writer.write_all(data);
+        let _ = writer.flush();
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let _ = self.master.lock().unwrap().resize(PtySize {
+            rows: rows.max(2),
+            cols: cols.max(2),
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
+
+    pub fn kill(&self) {
+        let _ = self.killer.lock().unwrap().kill();
+    }
+
+    pub fn set_status(&self, state: &'static str, detail: impl Into<String>) {
+        *self.status.lock().unwrap() = Status {
+            state,
+            detail: detail.into(),
+            since: Instant::now(),
+        };
+    }
+}
+
+/// Variables an agent host sets for the session it runs. When Essaim itself
+/// is started from such a session, passing them on would make every agent
+/// behave as that session's child (no transcript, borrowed messaging token).
+const HOST_SESSION_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_DESKTOP_APP_VERSION",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+    "CLAUDE_CODE_EAGER_FLUSH",
+    "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+    "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_REPORT_FINDINGS",
+    "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+];
+
+fn command_for(program: &Path) -> CommandBuilder {
+    let is_script = program
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "cmd" | "bat"));
+
+    // npm installs CLIs as .cmd shims, which only cmd.exe can launch.
+    if is_script {
+        let mut command = CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/c"]);
+        command.arg(program);
+        command
+    } else {
+        CommandBuilder::new(program)
+    }
+}
+
+fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
+    let text = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    std::fs::write(path, text).map_err(|error| error.to_string())
+}
+
+/// Where the agent finds the app. The same address everywhere: inside WSL it
+/// is the relay's, which forwards to the app.
+fn app_address(state: &Shared) -> String {
+    format!("http://127.0.0.1:{}", state.port)
+}
+
+/// A per-session configuration file: the path to write it at, and the path
+/// the agent must be given, which differ when the agent runs inside WSL.
+fn config_file(state: &Shared, launch: &Launch, session_id: &str, what: &str) -> (PathBuf, String) {
+    if launch.in_wsl {
+        isolation::config_path(session_id, what)
+    } else {
+        let path = state.data_dir.join(what).join(format!("{session_id}.json"));
+        let shown = path.to_string_lossy().into_owned();
+        (path, shown)
+    }
+}
+
+/// Each session gets its own MCP address, which is how a tool call tells the
+/// app which agent is asking.
+fn write_mcp_config(state: &Shared, project: &Project, session_id: &str, launch: &Launch) -> Result<String, String> {
+    let (path, shown) = config_file(state, launch, session_id, "mcp");
+    let url = format!(
+        "{}/mcp/{}/{}/{}",
+        app_address(state),
+        state.token,
+        project.id,
+        session_id
+    );
+    write_json(&path, &json!({ "mcpServers": { "essaim": { "type": "http", "url": url } } }))?;
+    Ok(shown)
+}
+
+/// Settings that make Claude Code post its lifecycle events to the app. The
+/// event arrives on the hook's stdin and curl forwards it as is; whatever the
+/// app answers is the hook's verdict.
+fn write_hook_settings(state: &Shared, session_id: &str, launch: &Launch) -> Result<String, String> {
+    let command = format!(
+        "curl -s --max-time 3 -X POST -H \"Content-Type: application/json\" --data-binary @- {}/hook/{}/{}",
+        app_address(state),
+        state.token,
+        session_id
+    );
+
+    let mut hooks = serde_json::Map::new();
+    for (event, matcher) in HOOK_EVENTS {
+        let mut entry = json!({ "hooks": [{ "type": "command", "command": command }] });
+        if let Some(matcher) = matcher {
+            entry["matcher"] = json!(matcher);
+        }
+        hooks.insert((*event).to_owned(), json!([entry]));
+    }
+
+    let (path, shown) = config_file(state, launch, session_id, "hooks");
+    write_json(&path, &json!({ "hooks": hooks }))?;
+    Ok(shown)
+}
+
+fn build_command(
+    state: &Shared,
+    project: &Project,
+    session_id: &str,
+    launch: &Launch,
+    agent_id: Option<&str>,
+) -> Result<CommandBuilder, String> {
+    let locate = |name: &str| {
+        which::which(name).map_err(|_| format!("`{name}` est introuvable dans le PATH"))
+    };
+
+    let mut command = match launch.kind {
+        Kind::Claude => {
+            let mut command = if launch.in_wsl {
+                // The distribution's default user is the unprivileged agent,
+                // and the project is the only Windows folder mounted there.
+                let mut command = CommandBuilder::new("wsl.exe");
+                command.args(["-d", isolation::DISTRO, "--cd"]);
+                command.arg(isolation::mount_point(project));
+                command.args(["--", isolation::CLAUDE]);
+                command
+            } else {
+                command_for(&locate("claude")?)
+            };
+            command.arg("--mcp-config");
+            command.arg(write_mcp_config(state, project, session_id, launch)?);
+            command.arg("--settings");
+            command.arg(write_hook_settings(state, session_id, launch)?);
+            if let Some(id) = agent_id {
+                command.arg(if launch.resume.is_some() { "--resume" } else { "--session-id" });
+                command.arg(id);
+            }
+            if launch.skip_permissions {
+                command.arg("--dangerously-skip-permissions");
+            }
+            command
+        }
+        Kind::Codex => {
+            let mut command = command_for(&locate("codex")?);
+            // Unquoted on purpose: codex falls back to a plain string when
+            // the value isn't valid TOML, and quotes don't survive cmd.exe.
+            command.arg("-c");
+            command.arg(format!(
+                "mcp_servers.essaim.url={}",
+                state.session_mcp_url(&project.id, session_id)
+            ));
+            if launch.isolated {
+                // Codex brings its own sandbox: commands run without asking,
+                // but can only write inside the project.
+                command.args(["--sandbox", "workspace-write"]);
+                if launch.skip_permissions {
+                    command.args(["--ask-for-approval", "never"]);
+                }
+            } else if launch.skip_permissions {
+                command.arg("--dangerously-bypass-approvals-and-sandbox");
+            }
+            command
+        }
+        Kind::Shell => {
+            let mut command = CommandBuilder::new("powershell.exe");
+            command.arg("-NoLogo");
+            command
+        }
+    };
+
+    for name in HOST_SESSION_VARS {
+        command.env_remove(name);
+    }
+    // wsl.exe itself starts from a neutral folder: `--cd` is what places the
+    // agent, and a Windows working directory would only leak a path.
+    if !launch.in_wsl {
+        command.cwd(&project.path);
+    }
+    command.env("ESSAIM_PROJECT", &project.name);
+    Ok(command)
+}
+
+pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<SessionInfo, String> {
+    let number = state.next_id();
+    let session_id = format!("s{number}");
+
+    // Chosen here rather than by the agent so that the conversation can be
+    // resumed even if the app dies before the agent reports anything.
+    let agent_id = match launch.kind {
+        Kind::Claude => Some(
+            launch
+                .resume
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        ),
+        _ => None,
+    };
+
+    let command = build_command(state, project, &session_id, &launch, agent_id.as_deref())?;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| error.to_string())?;
+    if let Some(process_id) = child.process_id() {
+        crate::jobs::adopt(process_id);
+    }
+    // The child holds its own handle; keeping ours open would stop the reader
+    // from ever seeing the end of the stream.
+    drop(pair.slave);
+
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| error.to_string())?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| error.to_string())?;
+
+    let info = SessionInfo {
+        id: session_id,
+        project_id: project.id.clone(),
+        kind: launch.kind,
+        title: launch
+            .title
+            .unwrap_or_else(|| format!("{} #{number}", launch.kind.label())),
+    };
+
+    let session = Arc::new(Session {
+        info: info.clone(),
+        exited: AtomicBool::new(false),
+        skip_permissions: launch.skip_permissions,
+        isolated: launch.isolated,
+        agent_id: Mutex::new(agent_id),
+        used: AtomicBool::new(launch.resume.is_some()),
+        status: Mutex::new(Status {
+            state: if launch.kind == Kind::Claude { "starting" } else { "" },
+            detail: String::new(),
+            since: Instant::now(),
+        }),
+        master: Mutex::new(pair.master),
+        writer: Mutex::new(writer),
+        killer: Mutex::new(child.clone_killer()),
+        scrollback: Mutex::new(Vec::new()),
+        output: broadcast::channel(1024).0,
+    });
+
+    let reading = session.clone();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    let mut scrollback = reading.scrollback.lock().unwrap();
+                    scrollback.extend_from_slice(&chunk[..read]);
+                    if scrollback.len() > SCROLLBACK_BYTES {
+                        let excess = scrollback.len() - SCROLLBACK_BYTES;
+                        scrollback.drain(..excess);
+                    }
+                    let _ = reading.output.send(Bytes::copy_from_slice(&chunk[..read]));
+                }
+            }
+        }
+    });
+
+    // ConPTY keeps the output pipe open after the process ends, so the exit
+    // has to be observed on the child itself rather than on the reader.
+    let waiting = session.clone();
+    let notified = state.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        waiting.exited.store(true, Ordering::Relaxed);
+        let _ = waiting
+            .output
+            .send(Bytes::from_static(b"\r\n\x1b[2m[session termin\xc3\xa9e]\x1b[0m\r\n"));
+        // An agent that is gone must stop holding files back from the others.
+        agents::release_all(&notified, &waiting.info.id);
+        agents::save_sessions(&notified);
+        notified.notify();
+    });
+
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(info.id.clone(), session);
+    agents::save_sessions(state);
+    state.notify();
+    Ok(info)
+}
