@@ -148,6 +148,7 @@ const ICONS = {
   merge: "M18 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21V9a9 9 0 0 0 9 9",
   grid: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
   tabs: "M3 8h18v12H3zM3 8V4h8v4",
+  back: "M19 12H5M12 19l-7-7 7-7",
   check: "M20 6 9 17l-5-5",
   alert: "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
   setup: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
@@ -736,100 +737,237 @@ interface Settings {
   notifications: string;
 }
 
-async function openSettingsDialog() {
-  const settings = await api<Settings>("/api/settings");
-  const field = (key: keyof Settings, placeholder: string) =>
-    h("input", { name: key, value: settings[key], placeholder, autocomplete: "off" });
-  const fields = {
-    claude_model: field("claude_model", "Celui de Claude Code (ex. opus, sonnet, haiku)"),
-    codex_model: field("codex_model", "Celui de Codex"),
-    projects_dir: field("projects_dir", "Documents\\RoVibe"),
-    publish_shortcut: field("publish_shortcut", "alt+p"),
-    isolation_network: h(
-      "select",
-      { name: "isolation_network" },
-      h("option", { value: "" }, "Restreint : l'API du modèle et les hôtes ci-dessous"),
-      h("option", { value: "open" }, "Ouvert : tout internet"),
-    ),
-    isolation_hosts: field("isolation_hosts", "ex. github.com *.githubusercontent.com"),
-    notifications: h(
-      "select",
-      { name: "notifications" },
-      h("option", { value: "" }, "Quand un agent m'attend ou a fini, si la fenêtre n'est pas devant"),
-      h("option", { value: "waiting" }, "Seulement quand un agent m'attend"),
-      h("option", { value: "off" }, "Jamais"),
-    ),
-  };
-  fields.notifications.value = ["waiting", "off"].includes(settings.notifications) ? settings.notifications : "";
-  fields.isolation_network.value = settings.isolation_network === "open" ? "open" : "";
-  // Kept by this window rather than by the server: it is about the window.
-  const closing = h(
-    "select",
-    {},
-    h("option", { value: "" }, "Me demander"),
-    h("option", { value: "hide" }, "Continuer en arrière-plan"),
-    h("option", { value: "quit" }, "Arrêter les agents et quitter"),
-  );
-  closing.value = localStorage.getItem("rovibe.close") ?? "";
-  const language = h(
-    "select",
-    {},
-    h("option", { value: "" }, "Celle du système"),
-    h("option", { value: "fr" }, "Français"),
-    h("option", { value: "en" }, "English"),
-  );
-  language.value = localStorage.getItem("rovibe.lang") ?? "";
+/** What the main area shows: the selected project, or the settings. */
+let view: "project" | "settings" = sessionStorage.getItem("rovibe.view") === "settings" ? "settings" : "project";
+const settingsPage = h("section", { class: "settings", hidden: true });
+/** Brings the page's status lines up to date; its fields are left alone, so
+ *  that a refresh never interrupts typing. */
+let settingsStatus: ((current: State) => void) | null = null;
 
-  dialog.replaceChildren(
-    h(
-      "form",
-      {
-        onsubmit: (event: Event) => {
-          event.preventDefault();
-          void run(async () => {
-            const body = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value.trim()]));
-            const result = await api("/api/settings", "PUT", body);
-            if (closing.value) localStorage.setItem("rovibe.close", closing.value);
-            else localStorage.removeItem("rovibe.close");
-            const before = localStorage.getItem("rovibe.lang") ?? "";
-            if (language.value) localStorage.setItem("rovibe.lang", language.value);
-            else localStorage.removeItem("rovibe.lang");
-            // The page is built in one language: a change starts it again.
-            if (language.value !== before) location.reload();
-            dialog.close();
-            return result;
-          });
-        },
-      },
-      h("h2", {}, "Réglages"),
-      h("label", {}, h("span", {}, "Modèle par défaut des sessions Claude Code"), fields.claude_model),
-      h("label", {}, h("span", {}, "Modèle par défaut des sessions Codex"), fields.codex_model),
-      h("label", {}, h("span", {}, "Dossier où créer les nouveaux projets (chemin complet)"), fields.projects_dir),
-      h(
-        "label",
-        {},
-        h("span", {}, "Raccourci « Publier sur Roblox » de Studio, si tu l'as changé. Touches séparées par +."),
-        fields.publish_shortcut,
+function closeSettings() {
+  view = "project";
+  sessionStorage.removeItem("rovibe.view");
+  render();
+}
+
+async function openSettings() {
+  view = "settings";
+  sessionStorage.setItem("rovibe.view", "settings");
+  const settings = await api<Settings>("/api/settings");
+  const values: Settings = { ...settings };
+
+  // Every change is saved as it is made; this says so, briefly.
+  const saved = h("span", { class: "saved", role: "status" });
+  let fading = 0;
+  const confirmSaved = () => {
+    saved.textContent = tr("Enregistré");
+    saved.classList.add("on");
+    clearTimeout(fading);
+    fading = window.setTimeout(() => saved.classList.remove("on"), 1800);
+  };
+  // A value the server refuses never enters `values`: it would make every
+  // later save fail with it. The field goes back to what is really stored.
+  const save = async (key: keyof Settings, value: string, restore: (stored: string) => void) => {
+    try {
+      await api("/api/settings", "PUT", { ...values, [key]: value });
+      values[key] = value;
+      confirmSaved();
+    } catch (error) {
+      toast((error as Error).message, true);
+      restore(values[key]);
+    }
+  };
+
+  const text = (key: keyof Settings, placeholder: string) => {
+    const input = h("input", { value: settings[key], placeholder, autocomplete: "off", spellcheck: "false" });
+    input.addEventListener("change", () => void save(key, input.value.trim(), (stored) => (input.value = stored)));
+    return input;
+  };
+  const choice = (current: string, options: [string, string][], onChange: (value: string, select: HTMLSelectElement) => void) => {
+    const select = h("select", {}, ...options.map(([value, label]) => h("option", { value }, label)));
+    select.value = options.some(([value]) => value === current) ? current : options[0][0];
+    select.addEventListener("change", () => onChange(select.value, select));
+    return select;
+  };
+  const serverChoice = (key: keyof Settings, options: [string, string][]) =>
+    choice(settings[key], options, (value, select) => void save(key, value, (stored) => (select.value = stored)));
+  const local = (key: string, options: [string, string][], after?: () => void) =>
+    choice(localStorage.getItem(key) ?? "", options, (value) => {
+      if (value) localStorage.setItem(key, value);
+      else localStorage.removeItem(key);
+      confirmSaved();
+      after?.();
+    });
+
+  const row = (label: string, hint: string, control: Child) =>
+    h("div", { class: "setting" }, h("div", { class: "about" }, h("strong", {}, label), hint ? h("small", {}, hint) : null), h("div", { class: "control" }, control));
+  const state_ = (name: string) => {
+    const dot = h("span", { class: "dot" });
+    const label = h("span", {});
+    return { element: h("span", { class: "state-line", "data-name": name }, dot, label), dot, label };
+  };
+  const sections: [string, string, string, Child[]][] = [];
+  const section = (id: string, title: string, intro: string, ...rows: Child[]) => sections.push([id, title, intro, rows]);
+
+  const claude = state_("claude");
+  const codex = state_("codex");
+  const plugin = state_("plugin");
+  const studio = state_("studio");
+  const distro = state_("distro");
+  const version = h("strong", {});
+  const update = h("div", { class: "control" });
+  const pluginButton = h("button", { onclick: () => run(() => api("/api/plugin/install", "POST")) });
+
+  const hosts = h("textarea", { rows: 3, placeholder: "ex. github.com *.githubusercontent.com", spellcheck: "false" });
+  hosts.value = settings.isolation_hosts;
+  hosts.addEventListener("change", () => void save("isolation_hosts", hosts.value.trim(), (stored) => (hosts.value = stored)));
+
+  section(
+    "general",
+    "Général",
+    "Ce qui tient à l'app elle-même.",
+    row(
+      "Langue",
+      "L'interface suit la langue du système, ou celle que tu choisis ici.",
+      local(
+        "rovibe.lang",
+        [
+          ["", "Celle du système"],
+          ["fr", "Français"],
+          ["en", "English"],
+        ],
+        // The page is built in one language: a change starts it again.
+        () => location.reload(),
       ),
-      h("label", {}, h("span", {}, "Réseau des agents isolés (Claude Code dans WSL)"), fields.isolation_network),
-      h(
-        "label",
-        {},
-        h("span", {}, "Hôtes en plus de l'API du modèle, en HTTPS. Un nom, ou *.domaine pour tout un domaine."),
-        fields.isolation_hosts,
-      ),
-      h("label", {}, h("span", {}, "Fermer la fenêtre pendant que des sessions tournent"), closing),
-      h("label", {}, h("span", {}, "Notifications Windows"), fields.notifications),
-      h("label", {}, h("span", {}, "Langue"), language),
+    ),
+    row(
+      "Fermer la fenêtre pendant que des sessions tournent",
+      "En arrière-plan, les agents continuent et l'icône près de l'horloge rouvre la fenêtre.",
+      local("rovibe.close", [
+        ["", "Me demander"],
+        ["hide", "Continuer en arrière-plan"],
+        ["quit", "Arrêter les agents et quitter"],
+      ]),
+    ),
+    row(
+      "Notifications Windows",
+      "Elles ne partent que si la fenêtre n'est pas devant.",
+      serverChoice("notifications", [
+        ["", "Quand un agent m'attend ou a fini"],
+        ["waiting", "Seulement quand un agent m'attend"],
+        ["off", "Jamais"],
+      ]),
+    ),
+    row(
+      "Dossier des nouveaux projets",
+      "Chemin complet. Vide : Documents\\RoVibe.",
+      text("projects_dir", "Documents\\RoVibe"),
+    ),
+  );
+  section(
+    "agents",
+    "Agents",
+    "Les modèles donnés aux nouvelles sessions. Celui de Claude Code se choisit aussi au lancement.",
+    row("Claude Code", "", claude.element),
+    row("Modèle de Claude Code", "Vide : celui que Claude Code choisit lui-même.", text("claude_model", "ex. opus, sonnet, haiku")),
+    row("Codex", "", codex.element),
+    row("Modèle de Codex", "Vide : celui que Codex choisit lui-même.", text("codex_model", "")),
+  );
+  section(
+    "studio",
+    "Roblox Studio",
+    "Le lien entre l'app et Studio.",
+    row("Plugin RoVibe Studio", "Après une installation ou une mise à jour, redémarre Studio pour le charger.", h("div", { class: "control-stack" }, plugin.element, pluginButton)),
+    row("Studio", "", studio.element),
+    row(
+      "Raccourci « Publier sur Roblox »",
+      "À changer seulement si tu l'as changé dans Studio. Touches séparées par +.",
+      text("publish_shortcut", "alt+p"),
+    ),
+  );
+  section(
+    "isolation",
+    "Agents isolés",
+    "Un agent lancé avec « Isolé » tourne dans une distribution WSL où il ne voit que son projet.",
+    row("Distribution WSL", "Créée une fois par scripts\\setup-isolation.ps1.", distro.element),
+    row(
+      "Réseau",
+      "Restreint, un agent isolé ne joint que l'API de son modèle et les hôtes ci-dessous.",
+      serverChoice("isolation_network", [
+        ["", "Restreint"],
+        ["open", "Ouvert : tout internet"],
+      ]),
+    ),
+    row("Hôtes autorisés en plus", "En HTTPS. Un nom par hôte, ou *.domaine pour tout un domaine.", hosts),
+  );
+  section(
+    "about",
+    "À propos",
+    "",
+    row("Version", "", version),
+    row("Mise à jour", "L'app en cherche une à chaque démarrage.", update),
+    row(
+      "Diagnostic",
+      "Ce que l'app a fait, et ce dont elle a besoin sur ce PC.",
       h(
         "div",
-        { class: "actions" },
-        h("button", { type: "button", onclick: () => dialog.close() }, "Annuler"),
-        h("button", { class: "primary", type: "submit" }, "Enregistrer"),
+        { class: "control-stack" },
+        h("button", { onclick: () => run(openLogDialog) }, icon("log"), "Journal"),
+        h("button", { onclick: openSetupDialog }, icon("setup"), "Premiers pas"),
       ),
     ),
+    row("Code source", "", h("code", {}, "github.com/aaldersondev/rovibe")),
   );
-  dialog.showModal();
+
+  const content = h("div", { class: "settings-content" });
+  settingsPage.replaceChildren(
+    h(
+      "header",
+      { class: "settings-head" },
+      h("button", { class: "quiet", title: "Revenir au projet", onclick: closeSettings }, icon("back"), "Retour"),
+      h("h1", {}, "Réglages"),
+      saved,
+    ),
+    h(
+      "div",
+      { class: "settings-body" },
+      h(
+        "nav",
+        { class: "settings-nav", "aria-label": "Sections" },
+        ...sections.map(([id, title]) =>
+          h("button", { class: "quiet", onclick: () => document.getElementById(`settings-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, title),
+        ),
+      ),
+      content,
+    ),
+  );
+  content.replaceChildren(
+    ...sections.map(([id, title, intro, rows]) =>
+      h("section", { class: "settings-section", id: `settings-${id}` }, h("h2", {}, title), intro ? h("p", { class: "notice" }, intro) : null, h("div", { class: "settings-card" }, ...rows)),
+    ),
+  );
+
+  const show = (line: ReturnType<typeof state_>, ok: boolean, yes: string, no: string) => {
+    line.dot.className = ok ? "dot on" : "dot off";
+    line.label.textContent = tr(ok ? yes : no);
+  };
+  settingsStatus = (current) => {
+    show(claude, current.tools.claude, "Installé", "Introuvable dans le PATH");
+    show(codex, current.tools.codex, "Installé", "Introuvable dans le PATH");
+    show(plugin, current.plugin_installed, "Installé", "Pas installé");
+    pluginButton.textContent = tr(current.plugin_installed ? "Réinstaller" : "Installer le plugin");
+    pluginButton.hidden = !current.tools.sync;
+    const editors = current.studios.filter((studio) => studio.context === "edit");
+    show(studio, editors.length > 0, editors.map((studio) => studio.name).join(", ") || "Connecté", "Non connecté");
+    show(distro, current.isolation, "Installée", "Pas installée");
+    version.textContent = `RoVibe ${current.version}`;
+    update.replaceChildren(
+      current.update
+        ? h("button", { class: "primary", onclick: () => run(() => api("/api/update", "POST")) }, `Installer RoVibe ${current.update}`)
+        : h("span", { class: "state-line" }, h("span", { class: "dot on" }), "Aucune mise à jour en attente"),
+    );
+  };
+  render();
 }
 
 async function openLogDialog() {
@@ -1152,6 +1290,8 @@ async function openBankDialog() {
 }
 
 function select(id: string) {
+  view = "project";
+  sessionStorage.removeItem("rovibe.view");
   selected = id;
   localStorage.setItem("rovibe.project", id);
   render();
@@ -1636,8 +1776,14 @@ function renderRail(current: State) {
     '<path fill="#a78bfa" d="M13 1l5 3v6l-5 3-5-3V4z"/><path fill="#8b5cf6" d="M6.5 12.5l5 3v6l-5 3-5-3v-6z"/><path fill="#6d3fe0" d="M19.5 12.5l5 3v6l-5 3-5-3v-6z"/>';
 
   const todo = setupItems(current).filter((item) => item.needed && !item.ok).length;
-  const tool = (glyph: keyof typeof ICONS, label: string, hint: string, action: () => void, note = "") =>
-    h("button", { class: "tool", title: hint, onclick: action }, icon(glyph), h("span", {}, label), note && h("small", {}, note));
+  const tool = (glyph: keyof typeof ICONS, label: string, hint: string, action: () => void, note = "", current = false) =>
+    h(
+      "button",
+      { class: "tool", title: hint, "aria-current": current ? "page" : false, onclick: action },
+      icon(glyph),
+      h("span", {}, label),
+      note && h("small", {}, note),
+    );
 
   rail.replaceChildren(
     h("div", { class: "brand", title: "Vibe Code Together in Roblox Studio." }, logo, "RoVibe"),
@@ -1657,7 +1803,7 @@ function renderRail(current: State) {
         const dormant = current.dormant.filter((s) => s.project_id === project.id).length;
         return h(
           "button",
-          { class: "project", "aria-current": String(project.id === selected), onclick: () => select(project.id) },
+          { class: "project", "aria-current": String(project.id === selected && view === "project"), onclick: () => select(project.id) },
           h("span", { class: waiting > 0 ? "dot off" : count > 0 ? "dot on" : "dot" }),
           h(
             "span",
@@ -1697,7 +1843,7 @@ function renderRail(current: State) {
           () => run(() => api("/api/plugin/install", "POST")),
           current.plugin_installed ? "mettre à jour" : "à installer",
         ),
-      tool("settings", "Réglages", "Modèles par défaut, dossiers, réseau des agents isolés", () => run(openSettingsDialog)),
+      tool("settings", "Réglages", "Langue, modèles, Studio, agents isolés", () => run(openSettings), "", view === "settings"),
       tool("log", "Journal", "Ce que l'app a fait", () => run(openLogDialog)),
       tool(
         "setup",
@@ -2112,12 +2258,23 @@ function render() {
   }
   const project = state.projects.find((candidate) => candidate.id === selected);
 
+  const inSettings = view === "settings";
   renderRail(state);
   if (project) renderBar(state, project);
-  bar.hidden = !project;
+  bar.hidden = !project || inSettings;
   renderRequests(state);
   renderPanes(state, project);
   renderComposer();
+  // The settings take the place of the project; its terminals stay as they
+  // are behind, and come back untouched.
+  settingsPage.hidden = !inSettings;
+  grid.hidden = inSettings;
+  if (inSettings) {
+    resumeBar.hidden = tabsBar.hidden = composer.hidden = true;
+    if (settingsStatus) settingsStatus(state);
+    // After a reload, the page is asked for again but not built yet.
+    else if (!settingsPage.hasChildNodes()) void openSettings();
+  }
   if (setupOpen) drawSetup();
   // A fresh install starts here, once.
   if (state.projects.length === 0 && !localStorage.getItem("rovibe.welcomed") && !dialog.open) {
@@ -2148,6 +2305,6 @@ function listen() {
 }
 
 grid.append(empty);
-app.append(h("div", { class: "shell" }, rail, h("main", { class: "main" }, bar, requests, resumeBar, tabsBar, grid, composer)), dialog, toasts);
+app.append(h("div", { class: "shell" }, rail, h("main", { class: "main" }, bar, requests, settingsPage, resumeBar, tabsBar, grid, composer)), dialog, toasts);
 void refresh();
 listen();
