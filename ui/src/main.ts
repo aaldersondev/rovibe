@@ -183,7 +183,8 @@ function createPane(session: Session): Pane {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
 
-  const body = h("div", { class: "pane-body" });
+  const screen = h("div", { class: "pane-term" });
+  const body = h("div", { class: "pane-body" }, screen);
   const stateLabel = h("span", { class: "state" });
   const filesLabel = h("span", { class: "state" });
   // Agents receive broadcast prompts by default; a plain terminal would run
@@ -302,7 +303,7 @@ function createPane(session: Session): Pane {
   // measures nothing, every later fit is a no-op, and the terminal stays at
   // 80x24 inside a much larger pane.
   const mount = () => {
-    terminal.open(body);
+    terminal.open(screen);
     try {
       terminal.loadAddon(new WebglAddon());
     } catch {
