@@ -5,6 +5,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
 /// Looks for a newer version once, tells the UI about it, and installs it
@@ -68,6 +69,7 @@ fn main() {
         // Starting the app again while it runs in the background is how a
         // user asks for its window back.
         .plugin(tauri_plugin_single_instance::init(|app, _arguments, _folder| show(app)))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url.parse()?))
@@ -137,6 +139,19 @@ fn main() {
                     while attention.recv().await.is_ok() {
                         if !flashing.is_focused().unwrap_or(false) {
                             let _ = flashing.request_user_attention(Some(tauri::UserAttentionType::Informational));
+                        }
+                    }
+                });
+                // A notification says what the taskbar flash can't: which
+                // agent, and why. Only when the user isn't already looking.
+                let mut notices = server.notices();
+                let notifier = app.handle().clone();
+                let watched = window.clone();
+                tasks.spawn(async move {
+                    while let Ok(notice) = notices.recv().await {
+                        let looking = watched.is_visible().unwrap_or(false) && watched.is_focused().unwrap_or(false);
+                        if !looking {
+                            let _ = notifier.notification().builder().title(&notice.title).body(&notice.body).show();
                         }
                     }
                 });

@@ -86,6 +86,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
                 "place_name": project.place_name,
                 "protected": project.protected,
                 "sync_running": syncs.contains_key(&project.id),
+                "sync_branch": syncs.get(&project.id).is_some_and(|running| running.source != project.path),
                 "sync_log": syncs.get(&project.id).map(|running| {
                     let log = running.log.lock().unwrap();
                     log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>()
@@ -116,6 +117,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
                 "project_id": session.info.project_id,
                 "kind": session.info.kind,
                 "title": session.info.title,
+                "branch": session.info.branch,
                 "exited": session.exited.load(Ordering::Relaxed),
                 "status": shown,
                 "detail": detail,
@@ -413,6 +415,9 @@ pub struct NewSession {
     #[serde(default)]
     isolated: bool,
     model: Option<String>,
+    /// Give the agent a folder and a branch of its own.
+    #[serde(default)]
+    worktree: bool,
 }
 
 pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSession>) -> ApiResult {
@@ -435,6 +440,22 @@ pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSes
     if in_wsl {
         isolation::prepare(&state, &project).await.map_err(fail)?;
     }
+    let worktree = if body.worktree && body.kind != pty::Kind::Shell {
+        if in_wsl {
+            return Err(fail("Une branche à part n'est pas possible pour un agent Claude Code isolé"));
+        }
+        let name = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
+        let worktree = pty::Worktree {
+            dir: state.data_dir.join("worktrees").join(&project.id).join(&name),
+            branch: format!("rovibe/{name}"),
+        };
+        git::add_worktree(&project.path, &worktree.dir, &worktree.branch)
+            .await
+            .map_err(fail)?;
+        Some(worktree)
+    } else {
+        None
+    };
     let launch = pty::Launch {
         kind: body.kind,
         skip_permissions: body.skip_permissions,
@@ -443,14 +464,48 @@ pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSes
         title: None,
         resume: None,
         model: body.model,
+        worktree,
     };
     let info = pty::spawn(&state, &project, launch).map_err(fail)?;
     Ok(Json(json!(info)))
 }
 
+/// Brings what an agent did in its own folder into the project.
+pub async fn merge_session(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    let session = state.sessions.lock().unwrap().get(&id).cloned().ok_or_else(|| fail("Session inconnue"))?;
+    let worktree = session.worktree.clone().ok_or_else(|| fail("Cette session travaille déjà dans le dossier du projet"))?;
+    let project = state.project(&session.info.project_id).ok_or_else(|| fail("Projet inconnu"))?;
+    let message = git::merge_worktree(&project.path, &worktree.dir, &worktree.branch, &session.info.title)
+        .await
+        .map_err(fail)?;
+    crate::log::info(format!("{} : {message}", session.info.title));
+    state.notify();
+    Ok(Json(json!({ "message": message })))
+}
+
 pub async fn remove_session(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
-    if let Some(session) = state.sessions.lock().unwrap().remove(&id) {
+    let removed = state.sessions.lock().unwrap().remove(&id);
+    if let Some(session) = removed {
         session.kill();
+        if let (Some(worktree), Some(project)) = (session.worktree.clone(), state.project(&session.info.project_id)) {
+            // Studio goes back to the project if it was showing this branch.
+            let showing = state.syncs.lock().unwrap().get(&project.id).is_some_and(|running| running.source == worktree.dir);
+            if showing {
+                let _ = sync::serve(&state, &project).await;
+            }
+            // The agent's processes need a moment to let go of the folder.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            if git::drop_worktree(&project.path, &worktree.dir, &worktree.branch).await {
+                crate::log::info(format!("{} : branche {} supprimée, tout était fusionné", session.info.title, worktree.branch));
+            } else {
+                crate::log::info(format!(
+                    "{} : son travail non fusionné reste sur la branche {} ({})",
+                    session.info.title,
+                    worktree.branch,
+                    worktree.dir.display()
+                ));
+            }
+        }
     }
     // Closing a session is the user saying it shouldn't come back.
     agents::release_all(&state, &id);

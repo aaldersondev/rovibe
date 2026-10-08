@@ -25,6 +25,9 @@ pub struct Settings {
     /// Hosts isolated agents may reach besides the model's API, e.g.
     /// `github.com *.githubusercontent.com`.
     pub isolation_hosts: String,
+    /// Windows notifications: empty for all of them, `waiting` for agents
+    /// that need the user only, `off` for none.
+    pub notifications: String,
 }
 
 /// What Claude Code needs to log in and to work: Anthropic's API and sign-in

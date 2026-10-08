@@ -88,6 +88,88 @@ pub async fn ensure_repo(dir: &Path) -> Result<(), String> {
     git(dir, &["update-ref", REVIEWED, "HEAD"]).await.map(|_| ())
 }
 
+/// Gives an agent a folder of its own: a second working tree of the project's
+/// repository, on a new branch that starts where the project is now.
+pub async fn add_worktree(project: &Path, dir: &Path, branch: &str) -> Result<(), String> {
+    if !is_root(project) {
+        return Err("Ce projet n'a pas son propre dépôt git : pas de branche à part possible".into());
+    }
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let dir = dir.to_string_lossy();
+    git(project, &["worktree", "add", "--quiet", "-b", branch, &dir, "HEAD"]).await.map(|_| ())
+}
+
+/// What the app drops into an agent's folder for its own use: never part of
+/// the agent's work.
+const NOT_WORK: &str = ":(exclude).codex";
+
+/// Brings an agent's branch into the project. Whatever the agent left
+/// uncommitted is committed first, under its name. A merge that conflicts is
+/// undone, and the files in conflict are named: the project is never left
+/// half-merged.
+pub async fn merge_worktree(project: &Path, dir: &Path, branch: &str, title: &str) -> Result<String, String> {
+    git(dir, &["add", "-A", "--", ".", NOT_WORK]).await?;
+    if git(dir, &["diff", "--cached", "--quiet"]).await.is_err() {
+        commit(dir, &format!("{title} : travail en cours")).await?;
+    }
+
+    let range = format!("HEAD..{branch}");
+    let ahead = git(project, &["rev-list", "--count", &range]).await?;
+    if ahead.trim() == "0" {
+        return Ok(format!("{title} n'a rien de nouveau à fusionner."));
+    }
+
+    let message = format!("Fusion du travail de {title}");
+    let configured = git(project, &["config", "user.email"]).await.is_ok_and(|email| !email.is_empty());
+    let mut args = Vec::new();
+    if !configured {
+        args.extend(["-c", "user.name=RoVibe", "-c", "user.email=rovibe@localhost"]);
+    }
+    args.extend(["merge", "--no-ff", "--no-edit", "-m", &message, branch]);
+    match git(project, &args).await {
+        Ok(_) => Ok(format!(
+            "{} commit(s) de {title} fusionné(s) dans le projet. À relire dans « Changements ».",
+            ahead.trim()
+        )),
+        Err(error) => {
+            let conflicts = git(project, &["diff", "--name-only", "--diff-filter=U"]).await.unwrap_or_default();
+            let _ = git(project, &["merge", "--abort"]).await;
+            if conflicts.trim().is_empty() {
+                Err(format!("Fusion impossible : {error}"))
+            } else {
+                Err(format!(
+                    "Fusion annulée, ces fichiers sont en conflit avec le projet : {}. Demande à {title} d'intégrer le projet dans sa branche (`git merge` de la branche principale) et de résoudre les conflits, puis fusionne de nouveau.",
+                    conflicts.lines().collect::<Vec<_>>().join(", ")
+                ))
+            }
+        }
+    }
+}
+
+/// Removes an agent's folder and branch if nothing would be lost with them:
+/// no uncommitted work, and nothing the project doesn't have. Says whether
+/// it did.
+pub async fn drop_worktree(project: &Path, dir: &Path, branch: &str) -> bool {
+    let clean = git(dir, &["status", "--porcelain", "--", ".", NOT_WORK])
+        .await
+        .is_ok_and(|status| status.trim().is_empty());
+    let range = format!("HEAD..{branch}");
+    let merged = git(project, &["rev-list", "--count", &range])
+        .await
+        .is_ok_and(|count| count.trim() == "0");
+    if !(clean && merged) {
+        return false;
+    }
+    let dir = dir.to_string_lossy();
+    let removed = git(project, &["worktree", "remove", "--force", &dir]).await.is_ok();
+    if removed {
+        let _ = git(project, &["branch", "-D", branch]).await;
+    }
+    removed
+}
+
 /// Carries over the review mark of a project from the name it had in an
 /// earlier version, so what awaited the user's review still does.
 pub async fn adopt_review_mark(dir: &Path, old: &str) {
@@ -303,6 +385,76 @@ pub async fn restore(dir: &Path, hash: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_agents_branch_is_merged_whole_or_not_at_all() {
+        let root = tempfile::tempdir().unwrap();
+        let (project, own) = (root.path().join("projet"), root.path().join("agent"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.luau"), "return 1
+").unwrap();
+        ensure_repo(&project).await.unwrap();
+
+        add_worktree(&project, &own, "rovibe/test").await.unwrap();
+        assert_eq!(std::fs::read_to_string(own.join("a.luau")).unwrap(), "return 1
+");
+        // Fresh and untouched: nothing would be lost with it. (Not dropped
+        // here: `false` is what the rest of the test relies on.)
+        std::fs::write(own.join("a.luau"), "return 2
+").unwrap();
+        std::fs::write(own.join("b.luau"), "return {}
+").unwrap();
+        std::fs::create_dir_all(own.join(".codex")).unwrap();
+        std::fs::write(own.join(".codex/hooks.json"), "{}").unwrap();
+        assert!(!drop_worktree(&project, &own, "rovibe/test").await);
+
+        // Uncommitted work is committed for the agent, then merged.
+        let merged = merge_worktree(&project, &own, "rovibe/test", "Claude Code #1").await.unwrap();
+        assert!(merged.contains("1 commit"), "{merged}");
+        assert_eq!(std::fs::read_to_string(project.join("a.luau")).unwrap(), "return 2
+");
+        assert!(project.join("b.luau").exists());
+        assert!(!project.join(".codex").exists());
+        let again = merge_worktree(&project, &own, "rovibe/test", "Claude Code #1").await.unwrap();
+        assert!(again.contains("rien de nouveau"), "{again}");
+
+        // Both sides change the same line: the merge is refused and undone.
+        std::fs::write(project.join("a.luau"), "return \"projet\"
+").unwrap();
+        assert!(snapshot(&project, "Côté projet").await.unwrap());
+        std::fs::write(own.join("a.luau"), "return \"agent\"
+").unwrap();
+        let refused = merge_worktree(&project, &own, "rovibe/test", "Claude Code #1").await.unwrap_err();
+        assert!(refused.contains("a.luau"), "{refused}");
+        assert_eq!(std::fs::read_to_string(project.join("a.luau")).unwrap(), "return \"projet\"
+");
+        assert!(!project.join(".git/MERGE_HEAD").exists());
+        assert!(dirty_paths(&project).await.unwrap().is_empty());
+        // Its unmerged work keeps the folder alive.
+        assert!(!drop_worktree(&project, &own, "rovibe/test").await);
+        assert!(own.join("a.luau").exists());
+    }
+
+    #[tokio::test]
+    async fn a_folder_with_nothing_to_lose_is_removed_with_its_branch() {
+        let root = tempfile::tempdir().unwrap();
+        let (project, own) = (root.path().join("projet"), root.path().join("agent"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.luau"), "return 1
+").unwrap();
+        ensure_repo(&project).await.unwrap();
+        add_worktree(&project, &own, "rovibe/vide").await.unwrap();
+        std::fs::create_dir_all(own.join(".codex")).unwrap();
+        std::fs::write(own.join(".codex/hooks.json"), "{}").unwrap();
+
+        assert!(drop_worktree(&project, &own, "rovibe/vide").await);
+        assert!(!own.exists());
+        assert!(git(&project, &["rev-parse", "--verify", "--quiet", "rovibe/vide"]).await.is_err());
+        // A project that isn't its own repository can't give one.
+        let plain = root.path().join("sans-git");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(add_worktree(&plain, &root.path().join("x"), "rovibe/x").await.is_err());
+    }
 
     #[tokio::test]
     async fn a_restore_brings_files_back_and_can_itself_be_undone() {
