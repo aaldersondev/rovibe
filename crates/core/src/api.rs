@@ -16,7 +16,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use std::time::Duration;
 
-use crate::{agents, assets, git, isolation, mcp, projects, pty, state::Shared, studio, sync};
+use crate::{agents, assets, git, isolation, mcp, projects, pty, state::Shared, sync};
 
 const PLUGIN_FILE: &str = "EssaimSync.rbxm";
 
@@ -64,14 +64,23 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
         .values()
         .map(|session| {
             let status = session.status.lock().unwrap();
+            // An agent that hasn't reported in after a few seconds is not
+            // loading: it is asking something before it starts, typically
+            // whether the folder can be trusted, and only the terminal shows it.
+            let stalled = status.state == "starting" && status.since.elapsed().as_secs() >= 8;
+            let (shown, detail) = if stalled {
+                ("waiting", "une question t'attend dans son terminal")
+            } else {
+                (status.state, status.detail.as_str())
+            };
             json!({
                 "id": session.info.id,
                 "project_id": session.info.project_id,
                 "kind": session.info.kind,
                 "title": session.info.title,
                 "exited": session.exited.load(Ordering::Relaxed),
-                "status": status.state,
-                "detail": status.detail,
+                "status": shown,
+                "detail": detail,
                 "since": status.since.elapsed().as_secs(),
                 "files": agents::files_of(&state, &session.info.id),
                 "isolated": session.isolated,
@@ -131,14 +140,21 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
 pub struct NewProject {
     name: String,
     path: Option<String>,
-    /// Build the project from the scripts of the place open in Studio.
-    #[serde(default)]
-    import_studio: bool,
+    /// Build the project from the scripts of a place open in Studio: the id
+    /// of that Studio connection, as listed in the state.
+    import_studio: Option<u64>,
 }
 
 pub async fn create_project(State(state): State<Shared>, Json(body): Json<NewProject>) -> ApiResult {
-    let export = if body.import_studio {
-        let studio = studio::pick(&state, None, "edit").map_err(fail)?;
+    let export = if let Some(id) = body.import_studio {
+        let studio = state
+            .studios
+            .lock()
+            .unwrap()
+            .get(&id)
+            .filter(|studio| studio.context == "edit")
+            .cloned()
+            .ok_or_else(|| fail("Cette place n'est plus ouverte dans Studio"))?;
         let export = studio
             .call("export_scripts", json!({}), Duration::from_secs(120))
             .await
