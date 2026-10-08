@@ -175,6 +175,23 @@ const HOST_SESSION_VARS: &[&str] = &[
     "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
 ];
 
+/// Variables a user sets on purpose, for every Claude Code they run.
+const KEPT_PREFIXES: &[&str] = &["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_", "CLAUDE_CODE_GIT_BASH_PATH"];
+
+/// Whether a variable inherited by the app would make an agent behave as the
+/// child of another agent's session. When the app was itself started from
+/// such a session, that is nearly every `CLAUDE*` variable: one of them
+/// switches the interface to a plain, colorless mode.
+fn from_host_session(name: &str, started_by_agent: bool) -> bool {
+    HOST_SESSION_VARS.contains(&name)
+        || (started_by_agent
+            && name.starts_with("CLAUDE")
+            && !KEPT_PREFIXES.iter().any(|kept| name.starts_with(kept)))
+}
+
+/// What tells a program it may use every color the terminal shows.
+const COLOR_ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
+
 fn command_for(program: &Path) -> CommandBuilder {
     let is_script = program
         .extension()
@@ -334,6 +351,7 @@ fn build_command(
                 command.args(["-d", isolation::distro(), "--cd"]);
                 command.arg(isolation::mount_point(project));
                 command.args(["--", "env"]);
+                command.args(COLOR_ENV.map(|(name, value)| format!("{name}={value}")));
                 command.args(isolation::proxy_env(state));
                 command.arg(isolation::CLAUDE);
                 command
@@ -401,8 +419,21 @@ fn build_command(
         }
     };
 
-    for name in HOST_SESSION_VARS {
-        command.env_remove(name);
+    let started_by_agent = std::env::var_os("CLAUDECODE").is_some();
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(|name| from_host_session(name, started_by_agent)) {
+            command.env_remove(name);
+        }
+    }
+    // The panes are xterm.js terminals: 24-bit color, whatever the app was
+    // started from.
+    for (name, value) in COLOR_ENV {
+        command.env(name, value);
+    }
+    // An agent host turns colors off for the programs it runs and reads;
+    // a user who set this for themselves keeps it.
+    if started_by_agent {
+        command.env_remove("NO_COLOR");
     }
     // wsl.exe itself starts from a neutral folder: `--cd` is what places the
     // agent, and a Windows working directory would only leak a path.
@@ -546,4 +577,24 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
     agents::save_sessions(state);
     state.notify();
     Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_never_inherits_the_session_the_app_was_started_from() {
+        // Always removed.
+        assert!(from_host_session("CLAUDECODE", false));
+        assert!(from_host_session("CLAUDE_CODE_SESSION_ID", false));
+        // What a user sets for themselves stays, unless it came from a host.
+        assert!(!from_host_session("CLAUDE_CODE_MAX_OUTPUT_TOKENS", false));
+        assert!(from_host_session("CLAUDE_CODE_SIMPLE", true));
+        assert!(from_host_session("CLAUDE_EFFORT", true));
+        assert!(!from_host_session("CLAUDE_CONFIG_DIR", true));
+        assert!(!from_host_session("CLAUDE_CODE_USE_BEDROCK", true));
+        assert!(!from_host_session("ANTHROPIC_API_KEY", true));
+        assert!(!from_host_session("PATH", true));
+    }
 }

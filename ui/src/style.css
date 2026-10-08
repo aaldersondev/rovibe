@@ -121,7 +121,9 @@ button:disabled {
 }
 
 .project {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   text-align: left;
   border: none;
@@ -152,15 +154,72 @@ button:disabled {
   color: var(--muted);
 }
 
-.rail-foot {
-  padding: 12px;
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 8px;
+.project-text {
+  min-width: 0;
 }
 
-.rail-foot button {
+.project .dot {
+  flex: none;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.rail-head .add {
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 6px;
+}
+
+.rail-foot {
+  padding: 8px 8px 10px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 2px;
+}
+
+.rail-foot .rail-head {
+  padding-inline: 8px;
+}
+
+.rail-foot .notice {
+  padding: 4px 8px;
+}
+
+.tool {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 7px 10px;
+}
+
+.tool:hover {
+  background: var(--deck);
+}
+
+.tool small {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.version {
+  padding: 8px 10px 0;
+  font-size: 11.5px;
+  color: var(--muted);
 }
 
 .notice {
@@ -170,20 +229,86 @@ button:disabled {
 
 /* Main area */
 
+/* A column, not grid rows: a hidden banner must not shift which part
+   stretches. The terminals take whatever the rest leaves. */
 .main {
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
 }
 
 .bar {
+  border-bottom: 1px solid var(--line);
+  background: var(--hull);
+}
+
+.bar[hidden] {
+  display: none;
+}
+
+.bar-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 8px 14px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
+}
+
+.bar-row.launch {
+  padding-block: 7px;
+  border-top: 1px solid var(--line);
+  background: var(--ink);
+}
+
+.identity {
+  display: grid;
+  min-width: 0;
+  max-width: 34ch;
+}
+
+.group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.group.options {
+  gap: 6px 14px;
+}
+
+.bar .label,
+.bar .summary {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.bar .summary.calls {
+  color: var(--coral);
+  font-weight: 600;
+}
+
+button.pill:disabled {
+  opacity: 0.45;
+}
+
+button.publish {
+  border-color: var(--honey);
+  color: var(--honey);
+}
+
+button.start {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+}
+
+button.start::before {
+  content: "+";
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .bar h1 {
@@ -195,13 +320,13 @@ button:disabled {
 
 .bar .path {
   color: var(--muted);
-  font-size: 12.5px;
-  flex: 0 1 20ch;
+  font-size: 12px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   direction: rtl;
+  text-align: left;
 }
 
 .spacer {
@@ -318,7 +443,7 @@ dialog.wide {
   background: var(--deck);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 5px 8px;
 }
 
 @media (max-width: 720px) {
@@ -351,6 +476,7 @@ dialog.wide {
 /* Terminal grid */
 
 .grid {
+  flex: 1;
   display: grid;
   gap: 8px;
   padding: 8px;
@@ -462,8 +588,11 @@ dialog.wide {
 
 .composer {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
-  padding: 0 8px 8px;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  background: var(--hull);
 }
 
 .composer[hidden] {
@@ -474,7 +603,7 @@ dialog.wide {
   flex: 1;
   min-width: 0;
   resize: none;
-  background: var(--hull);
+  background: var(--ink);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
@@ -487,25 +616,22 @@ dialog.wide {
   outline-offset: 1px;
 }
 
-.composer-side {
-  display: grid;
-  gap: 6px;
-  align-content: start;
-}
-
 .composer-saved {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 2px;
 }
 
 .composer-saved select {
-  flex: 1;
-  min-width: 0;
-  max-width: 22ch;
+  max-width: 24ch;
   background: var(--deck);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 4px 6px;
+  padding: 7px 8px;
+}
+
+.composer > button {
+  white-space: nowrap;
 }
 
 .pane-body {

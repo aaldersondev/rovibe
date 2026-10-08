@@ -145,6 +145,32 @@ function socketUrl(path: string) {
   return `ws://${location.host}${path}?token=${token}`;
 }
 
+/** The sixteen terminal colors, tuned to stay readable on the pane's dark
+ *  background: agents lean on them for diffs, warnings and prompts. */
+const TERMINAL_THEME = {
+  background: "#0a1319",
+  foreground: "#e4edf0",
+  cursor: "#f2b33d",
+  cursorAccent: "#0a1319",
+  selectionBackground: "#2a4654",
+  black: "#22323b",
+  red: "#ea6f61",
+  green: "#5fd3a6",
+  yellow: "#f2b33d",
+  blue: "#6cb0f0",
+  magenta: "#a99cf5",
+  cyan: "#5cc8d6",
+  white: "#c9d6db",
+  brightBlack: "#6f8792",
+  brightRed: "#ff9a8d",
+  brightGreen: "#8ee8c4",
+  brightYellow: "#ffd27a",
+  brightBlue: "#9ccbff",
+  brightMagenta: "#c8bfff",
+  brightCyan: "#8fe3ee",
+  brightWhite: "#ffffff",
+};
+
 function createPane(session: Session): Pane {
   const terminal = new Terminal({
     fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono"),
@@ -152,7 +178,7 @@ function createPane(session: Session): Pane {
     cursorBlink: true,
     scrollback: 8000,
     allowProposedApi: true,
-    theme: { background: "#0a1319", foreground: "#e4edf0", cursor: "#f2b33d", selectionBackground: "#2a4654" },
+    theme: TERMINAL_THEME,
   });
   const fit = new FitAddon();
   terminal.loadAddon(fit);
@@ -990,9 +1016,16 @@ interface Prompt {
 const prompts = new Map<string, Prompt[]>();
 const composer = h("form", { class: "composer" });
 const draft = h("textarea", {
-  rows: 2,
-  placeholder: "Consigne à envoyer aux agents cochés. Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne.",
+  rows: 1,
+  "aria-label": "Consigne",
+  placeholder: "Consigne pour les agents cochés — Entrée envoie, Maj+Entrée va à la ligne",
 });
+
+/** The field is one line tall and grows with what is typed, up to a point. */
+function fitDraft() {
+  draft.style.height = "auto";
+  draft.style.height = `${Math.min(draft.scrollHeight + 2, 168)}px`;
+}
 draft.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -1000,6 +1033,7 @@ draft.addEventListener("keydown", (event) => {
   }
 });
 draft.addEventListener("input", () => renderComposer());
+window.addEventListener("resize", fitDraft);
 
 function targets() {
   return (state?.sessions ?? []).filter(
@@ -1074,49 +1108,48 @@ function renderComposer() {
   const current = saved.findIndex((prompt) => prompt.text === draft.value.trim());
 
   composer.replaceChildren(
-    draft,
     h(
       "div",
-      { class: "composer-side" },
-      h(
-        "button",
-        { class: "primary", type: "submit", disabled: count === 0 || !draft.value.trim() },
-        count === 0 ? "Aucun agent coché" : count === 1 ? "Envoyer à 1 agent" : `Envoyer aux ${count} agents`,
-      ),
-      h(
-        "div",
-        { class: "composer-saved" },
-        picker,
-        current >= 0
-          ? h(
-              "button",
-              {
-                type: "button",
-                class: "quiet",
-                onclick: () => {
-                  if (confirm(`Supprimer la consigne « ${saved[current].name} » ?`)) {
-                    void savePrompts(projectId, saved.filter((_, index) => index !== current));
-                  }
-                },
+      { class: "composer-saved" },
+      picker,
+      current >= 0
+        ? h(
+            "button",
+            {
+              type: "button",
+              class: "quiet",
+              title: "Supprimer cette consigne enregistrée",
+              onclick: () => {
+                if (confirm(`Supprimer la consigne « ${saved[current].name} » ?`)) {
+                  void savePrompts(projectId, saved.filter((_, index) => index !== current));
+                }
               },
-              "Supprimer",
-            )
-          : h(
-              "button",
-              {
-                type: "button",
-                class: "quiet",
-                disabled: !draft.value.trim(),
-                onclick: () => {
-                  const name = prompt("Nom de la consigne");
-                  if (name?.trim()) void savePrompts(projectId, [...saved, { name: name.trim(), text: draft.value.trim() }]);
-                },
+            },
+            "Supprimer",
+          )
+        : h(
+            "button",
+            {
+              type: "button",
+              class: "quiet",
+              title: "Garder cette consigne dans le projet pour la réutiliser",
+              disabled: !draft.value.trim(),
+              onclick: () => {
+                const name = prompt("Nom de la consigne");
+                if (name?.trim()) void savePrompts(projectId, [...saved, { name: name.trim(), text: draft.value.trim() }]);
               },
-              "Enregistrer",
-            ),
-      ),
+            },
+            "Enregistrer",
+          ),
+    ),
+    draft,
+    h(
+      "button",
+      { class: "primary", type: "submit", disabled: count === 0 || !draft.value.trim() },
+      count === 0 ? "Aucun agent coché" : count === 1 ? "Envoyer à 1 agent" : `Envoyer aux ${count} agents`,
     ),
   );
+  fitDraft();
 }
 
 composer.addEventListener("submit", (event) => {
@@ -1170,8 +1203,17 @@ function renderRail(current: State) {
   logo.innerHTML =
     '<path fill="#f2b33d" d="M13 1l5 3v6l-5 3-5-3V4z"/><path fill="#5fd3a6" d="M6.5 12.5l5 3v6l-5 3-5-3v-6z"/><path fill="#a99cf5" d="M19.5 12.5l5 3v6l-5 3-5-3v-6z"/>';
 
+  const tool = (label: string, hint: string, action: () => void, note = "") =>
+    h("button", { class: "tool", title: hint, onclick: action }, h("span", {}, label), note && h("small", {}, note));
+
   rail.replaceChildren(
     h("div", { class: "brand", title: "Vibe Code Together in Roblox Studio." }, logo, "RoVibe"),
+    h(
+      "div",
+      { class: "rail-head" },
+      h("span", {}, "Projets"),
+      h("button", { class: "quiet add", title: "Nouveau projet", "aria-label": "Nouveau projet", onclick: openProjectDialog }, "+"),
+    ),
     h(
       "nav",
       { class: "projects", "aria-label": "Projets" },
@@ -1183,23 +1225,28 @@ function renderRail(current: State) {
         return h(
           "button",
           { class: "project", "aria-current": String(project.id === selected), onclick: () => select(project.id) },
-          h("strong", {}, project.name),
+          h("span", { class: waiting > 0 ? "dot off" : count > 0 ? "dot on" : "dot" }),
           h(
-            "small",
-            { class: waiting > 0 ? "calls" : "" },
-            waiting > 0
-              ? waiting === 1
-                ? "1 agent attend ta réponse"
-                : `${waiting} agents attendent ta réponse`
-              : dormant > 0 && count === 0
-                ? dormant === 1
-                  ? "1 session à reprendre"
-                  : `${dormant} sessions à reprendre`
-                : count === 0
-                  ? "Aucun agent"
-                  : count === 1
-                    ? "1 agent actif"
-                    : `${count} agents actifs`,
+            "span",
+            { class: "project-text" },
+            h("strong", {}, project.name),
+            h(
+              "small",
+              { class: waiting > 0 ? "calls" : "" },
+              waiting > 0
+                ? waiting === 1
+                  ? "1 agent attend ta réponse"
+                  : `${waiting} agents attendent ta réponse`
+                : dormant > 0 && count === 0
+                  ? dormant === 1
+                    ? "1 session à reprendre"
+                    : `${dormant} sessions à reprendre`
+                  : count === 0
+                    ? "Aucun agent"
+                    : count === 1
+                      ? "1 agent actif"
+                      : `${count} agents actifs`,
+            ),
           ),
         );
       }),
@@ -1210,23 +1257,18 @@ function renderRail(current: State) {
       !current.tools.sync && h("div", { class: "notice" }, "Serveur de synchro introuvable : compile vendor/sync."),
       !(current.checkers.selene && current.checkers.luau_lsp) &&
         h("div", { class: "notice" }, "Vérification du code incomplète : lance scripts\\get-tools.ps1 pour installer selene et luau-lsp."),
+      h("div", { class: "rail-head" }, h("span", {}, "Outils")),
+      tool("Banque d'assets", "Modèles réutilisables et Creator Store", () => run(openBankDialog)),
       current.tools.sync &&
-        h(
-          "button",
-          {
-            title: "Copie RoVibeStudio.rbxm dans le dossier Plugins de Roblox Studio",
-            onclick: () => run(() => api("/api/plugin/install", "POST")),
-          },
-          current.plugin_installed ? "Mettre à jour le plugin Studio" : "Installer le plugin Studio",
+        tool(
+          "Plugin Studio",
+          "Copie RoVibeStudio.rbxm dans le dossier Plugins de Roblox Studio",
+          () => run(() => api("/api/plugin/install", "POST")),
+          current.plugin_installed ? "mettre à jour" : "à installer",
         ),
-      h("button", { onclick: () => run(openBankDialog) }, "Banque d'assets"),
-      h(
-        "div",
-        { class: "foot-links" },
-        h("button", { class: "quiet", onclick: () => run(openSettingsDialog) }, "Réglages"),
-        h("button", { class: "quiet", onclick: () => run(openLogDialog) }, "Journal"),
-      ),
-      h("button", { class: "primary", onclick: openProjectDialog }, "Nouveau projet"),
+      tool("Réglages", "Modèles par défaut, dossiers, réseau des agents isolés", () => run(openSettingsDialog)),
+      tool("Journal", "Ce que l'app a fait", () => run(openLogDialog)),
+      h("div", { class: "version" }, `RoVibe ${current.version}`),
     ),
   );
 }
@@ -1275,104 +1317,168 @@ function renderBar(current: State, project: Project) {
 
   const sync = (action: string) => run(() => api(`/api/projects/${project.id}/sync`, "POST", { action }));
 
+  const live = current.sessions.filter((session) => session.project_id === project.id && !session.exited);
+  const busy = live.filter((session) => session.status === "working").length;
+  const calling = live.filter((session) => session.status === "waiting").length;
+  const summary =
+    live.length === 0
+      ? "Aucun agent"
+      : [
+          live.length === 1 ? "1 agent" : `${live.length} agents`,
+          busy > 0 ? `${busy} au travail` : "",
+          calling > 0 ? `${calling} en attente de toi` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
   bar.replaceChildren(
-    h("h1", {}, project.name),
-    h("span", { class: "path", title: project.path }, project.path),
     h(
-      "span",
-      {
-        class: blocked ? "pill alert" : "pill",
-        title: blocked ? `Studio attend une réponse : ${blocked}. Tant qu'elle est ouverte, il ignore les touches, les clics et les tests.` : "",
-      },
-      h("span", { class: linked.length && !blocked ? "dot on" : "dot off" }),
-      studioText,
-    ),
-    edits.length > 1 || bound ? binding : "",
-    h(
-      "button",
-      {
-        class: "pill",
-        title: project.sync_running ? "Arrêter le serveur de synchro" : "Démarrer le serveur de synchro",
-        onclick: () => sync(project.sync_running ? "stop" : "start"),
-      },
-      h("span", { class: project.sync_running ? "dot on" : "dot off" }),
-      project.sync_running ? `Synchro : port ${project.sync_port}` : "Synchro arrêtée",
-    ),
-    h(
-      "button",
-      { disabled: linked.length === 0, title: "Connecte Studio au serveur de synchro du projet", onclick: () => sync("connect") },
-      "Connecter Studio",
-    ),
-    h(
-      "button",
-      { title: "Ce que les agents ont modifié depuis ta dernière relecture", onclick: () => run(() => openChangesDialog(project)) },
-      "Changements",
-    ),
-    h("button", { title: "Points de sauvegarde et retour en arrière", onclick: () => run(() => openHistoryDialog(project)) }, "Historique"),
-    h(
-      "button",
-      {
-        disabled: linked.length === 0,
-        title: "Met la place ouverte dans Studio en ligne sur Roblox, par le raccourci de publication de Studio",
-        onclick: () => {
-          if (confirm(`Publier « ${linked[0].name} » sur Roblox ? Les joueurs recevront cette version.`)) {
-            void run(() => api(`/api/projects/${project.id}/publish`, "POST"));
-          }
-        },
-      },
-      "Publier",
-    ),
-    h("span", { class: "spacer" }),
-    h(
-      "label",
-      { class: "check", title: "Les agents agissent sans demander de confirmation. Un point de sauvegarde est créé avant chaque session lancée ainsi." },
-      h("input", {
-        type: "checkbox",
-        checked: skipPermissions,
-        onchange: (event: Event) => {
-          skipPermissions = (event.target as HTMLInputElement).checked;
-          localStorage.setItem("rovibe.skip", skipPermissions ? "1" : "0");
-        },
-      }),
-      "Sans confirmations",
-    ),
-    h(
-      "label",
-      {
-        class: "check",
-        title: current.isolation
-          ? "L'agent ne voit que le dossier du projet. Claude Code tourne dans une distribution WSL sans accès au reste du PC ; Codex dans son propre bac à sable."
-          : "Codex seulement pour l'instant. Pour Claude Code, lance scripts\\setup-isolation.ps1 une fois.",
-      },
-      h("input", {
-        type: "checkbox",
-        checked: isolated,
-        onchange: (event: Event) => {
-          isolated = (event.target as HTMLInputElement).checked;
-          localStorage.setItem("rovibe.isolated", isolated ? "1" : "0");
-        },
-      }),
-      "Isolé",
+      "div",
+      { class: "bar-row" },
+      h(
+        "div",
+        { class: "identity" },
+        h("h1", {}, project.name),
+        h("span", { class: "path", title: project.path }, project.path),
+      ),
+      h(
+        "div",
+        { class: "group", role: "group", "aria-label": "Roblox Studio" },
+        h(
+          "span",
+          {
+            class: blocked ? "pill alert" : "pill",
+            title: blocked
+              ? `Studio attend une réponse : ${blocked}. Tant qu'elle est ouverte, il ignore les touches, les clics et les tests.`
+              : "Place Studio vue par les agents de ce projet",
+          },
+          h("span", { class: linked.length && !blocked ? "dot on" : "dot off" }),
+          studioText,
+        ),
+        edits.length > 1 || bound ? binding : "",
+        h(
+          "button",
+          {
+            class: "pill",
+            title: project.sync_running ? "Arrêter le serveur de synchro" : "Démarrer le serveur de synchro",
+            onclick: () => sync(project.sync_running ? "stop" : "start"),
+          },
+          h("span", { class: project.sync_running ? "dot on" : "dot off" }),
+          project.sync_running ? `Synchro : port ${project.sync_port}` : "Synchro arrêtée",
+        ),
+        h(
+          "button",
+          {
+            class: "pill",
+            disabled: linked.length === 0,
+            title: "Connecte Studio au serveur de synchro du projet",
+            onclick: () => sync("connect"),
+          },
+          "Connecter",
+        ),
+      ),
+      h("span", { class: "spacer" }),
+      h(
+        "div",
+        { class: "group", role: "group", "aria-label": "Projet" },
+        h(
+          "button",
+          { title: "Ce que les agents ont modifié depuis ta dernière relecture", onclick: () => run(() => openChangesDialog(project)) },
+          "Changements",
+        ),
+        h("button", { title: "Points de sauvegarde et retour en arrière", onclick: () => run(() => openHistoryDialog(project)) }, "Historique"),
+        h(
+          "button",
+          {
+            class: "publish",
+            disabled: linked.length === 0,
+            title: "Met la place ouverte dans Studio en ligne sur Roblox, par le raccourci de publication de Studio",
+            onclick: () => {
+              if (confirm(`Publier « ${linked[0].name} » sur Roblox ? Les joueurs recevront cette version.`)) {
+                void run(() => api(`/api/projects/${project.id}/publish`, "POST"));
+              }
+            },
+          },
+          "Publier",
+        ),
+      ),
     ),
     h(
-      "select",
-      {
-        title: "Modèle de la prochaine session Claude Code",
-        onchange: (event: Event) => {
-          model = (event.target as HTMLSelectElement).value;
-          localStorage.setItem("rovibe.model", model);
-        },
-      },
-      ...[
-        ["", "Modèle : réglage"],
-        ["opus", "Modèle : Opus"],
-        ["sonnet", "Modèle : Sonnet"],
-        ["haiku", "Modèle : Haiku"],
-      ].map(([value, label]) => h("option", { value, selected: value === model }, label)),
+      "div",
+      { class: "bar-row launch" },
+      h("span", { class: "label" }, "Lancer"),
+      h(
+        "div",
+        { class: "group" },
+        h(
+          "button",
+          { class: "start claude", disabled: !current.tools.claude, title: current.tools.claude ? "Nouvelle session Claude Code" : "claude introuvable dans le PATH", onclick: () => newSession("claude") },
+          h("span", { class: "cell claude" }),
+          "Claude Code",
+        ),
+        h(
+          "button",
+          { class: "start", disabled: !current.tools.codex, title: current.tools.codex ? "Nouvelle session Codex" : "codex introuvable dans le PATH", onclick: () => newSession("codex") },
+          h("span", { class: "cell codex" }),
+          "Codex",
+        ),
+        h("button", { class: "start", title: "Un terminal dans le dossier du projet", onclick: () => newSession("shell") }, h("span", { class: "cell shell" }), "Terminal"),
+      ),
+      h("span", { class: "label" }, "avec"),
+      h(
+        "div",
+        { class: "group options" },
+        h(
+          "select",
+          {
+            title: "Modèle de la prochaine session Claude Code",
+            onchange: (event: Event) => {
+              model = (event.target as HTMLSelectElement).value;
+              localStorage.setItem("rovibe.model", model);
+            },
+          },
+          ...[
+            ["", "Modèle des réglages"],
+            ["opus", "Opus"],
+            ["sonnet", "Sonnet"],
+            ["haiku", "Haiku"],
+          ].map(([value, label]) => h("option", { value, selected: value === model }, label)),
+        ),
+        h(
+          "label",
+          { class: "check", title: "Les agents agissent sans demander de confirmation. Un point de sauvegarde est créé avant chaque session lancée ainsi." },
+          h("input", {
+            type: "checkbox",
+            checked: skipPermissions,
+            onchange: (event: Event) => {
+              skipPermissions = (event.target as HTMLInputElement).checked;
+              localStorage.setItem("rovibe.skip", skipPermissions ? "1" : "0");
+            },
+          }),
+          "Sans confirmations",
+        ),
+        h(
+          "label",
+          {
+            class: "check",
+            title: current.isolation
+              ? "L'agent ne voit que le dossier du projet. Claude Code tourne dans une distribution WSL sans accès au reste du PC ; Codex dans son propre bac à sable."
+              : "Codex seulement pour l'instant. Pour Claude Code, lance scripts\\setup-isolation.ps1 une fois.",
+          },
+          h("input", {
+            type: "checkbox",
+            checked: isolated,
+            onchange: (event: Event) => {
+              isolated = (event.target as HTMLInputElement).checked;
+              localStorage.setItem("rovibe.isolated", isolated ? "1" : "0");
+            },
+          }),
+          "Isolé",
+        ),
+      ),
+      h("span", { class: "spacer" }),
+      h("span", { class: calling > 0 ? "summary calls" : "summary" }, summary),
     ),
-    h("button", { disabled: !current.tools.claude, title: current.tools.claude ? "" : "claude introuvable dans le PATH", onclick: () => newSession("claude") }, "+ Claude Code"),
-    h("button", { disabled: !current.tools.codex, title: current.tools.codex ? "" : "codex introuvable dans le PATH", onclick: () => newSession("codex") }, "+ Codex"),
-    h("button", { onclick: () => newSession("shell") }, "+ Terminal"),
   );
 }
 
