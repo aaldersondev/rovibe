@@ -7,9 +7,11 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **Pont Studio** : le plugin garde un WebSocket ouvert vers l'app. Un appel d'outil fait un seul aller-retour local, sans polling.
 - **MCP `essaim`** : `run_luau` (edit, serveur et client), `get_tree`, `search`, `get_instance`, `get_console`, `check_code`, `publish`, `playtest`, `play_move`, `play_input`, `screenshot`, `asset_search`, `asset_insert`, `asset_save`, `sync_connect`, `studio_status`. Chaque session d'agent le reçoit automatiquement.
 - **Banque d'assets** : modèles enregistrés depuis Studio en `.rbxm`, chacun avec un aperçu photographié à l'enregistrement, dans `Documents\Essaim\Banque`, réutilisables d'un projet à l'autre, plus la recherche dans le Creator Store Roblox (assets gratuits). Les scripts d'un asset du Store sont désactivés à l'insertion.
-- **Coordination entre agents** : un fichier modifié par un agent lui est réservé 10 minutes ; un autre agent Claude Code qui tente de l'éditer est refusé avec le nom de celui qui le tient. Les agents peuvent aussi réserver à l'avance (`claim_files`) et voir qui fait quoi (`agents_status`).
+- **Coordination entre agents** : un fichier modifié par un agent lui est réservé 10 minutes ; un autre agent, Claude Code ou Codex, qui tente de l'éditer est refusé avec le nom de celui qui le tient. Le refus vaut aussi pour une commande shell qui écrirait dans ce fichier, et pour celles qui réécrivent tout le dossier (`git reset --hard`, `git stash`, `git checkout .`) tant qu'un autre agent tient quelque chose. Les agents peuvent aussi réserver à l'avance (`claim_files`) et voir qui fait quoi (`agents_status`).
 - **État des agents** : chaque panneau indique si l'agent travaille, attend une réponse ou a fini ; la barre des tâches clignote quand l'un d'eux attend.
 - **Sessions persistantes** : les sessions Claude Code ouvertes à la fermeture de l'app sont proposées au lancement suivant ; « Reprendre » relance l'agent sur sa conversation.
+- **Changements** : la liste de ce que les agents ont modifié depuis ta dernière relecture, commité ou non, avec l'agent en cause et le diff ; chaque fichier s'annule séparément, « Tout accepter » repart de l'état courant.
+- **Réglages** : modèle par défaut de Claude Code et de Codex, dossier des nouveaux projets, raccourci de publication de Studio. Le modèle se choisit aussi session par session.
 - **Journal** : `%APPDATA%\Essaim\essaim.log`, consultable depuis l'app, trace les sessions, la synchro, les connexions de Studio, les outils en erreur et les mises à jour.
 - **Studio bloqué** : une boîte de dialogue ouverte dans Studio (par exemple « Auto Recovery » après une fermeture brutale) est signalée dans l'app et par `studio_status`, et les tests ne sont pas lancés tant qu'elle est là.
 - **Consignes** : une consigne s'envoie à plusieurs agents à la fois ; les consignes fréquentes s'enregistrent dans le projet (`.essaim/consignes.json`).
@@ -47,7 +49,7 @@ Au démarrage, l'app lit `latest.json` sur la dernière release GitHub du dépô
 3. Ouvre la place dans Studio, puis « Connecter Studio ». La première synchro demande une confirmation dans Studio.
 4. Lance des agents avec « + Claude Code » ou « + Codex ».
 
-`claude` et `codex` doivent être dans le PATH. L'app n'inclut aucun modèle : chaque agent utilise ton propre abonnement.
+`claude` et `codex` doivent être dans le PATH. Au premier lancement de Codex dans un projet, Codex demande d'approuver les hooks qu'Essaim y a déposés (`.codex/hooks.json`) : c'est par eux qu'il transmet son état et respecte les verrous. L'app n'inclut aucun modèle : chaque agent utilise ton propre abonnement.
 
 ## Tests
 

@@ -5,6 +5,7 @@ mod agents;
 mod api;
 mod assets;
 mod git;
+mod guard;
 mod import;
 mod lint;
 pub mod log;
@@ -15,6 +16,7 @@ mod mcp;
 mod projects;
 mod pty;
 mod screenshot;
+mod settings;
 mod state;
 mod studio;
 mod sync;
@@ -183,6 +185,12 @@ fn router(state: Shared) -> Router {
         .route("/api/approvals/{id}", post(api::answer_approval))
         .route("/api/update", post(api::install_update))
         .route("/api/log", get(api::read_log))
+        .route("/api/settings", get(api::get_settings).put(api::put_settings))
+        .route(
+            "/api/projects/{id}/changes",
+            get(api::project_changes).post(api::review_changes),
+        )
+        .route("/api/projects/{id}/changes/diff", get(api::change_diff))
         .route(
             "/api/dormant/{agent}",
             post(api::resume_session).delete(api::forget_session),
