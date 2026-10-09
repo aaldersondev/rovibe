@@ -241,9 +241,37 @@ fn safe(path: &str) -> Result<(), String> {
 /// Everything that differs from the last reviewed state, committed or not.
 pub async fn changes(dir: &Path) -> Result<Vec<Change>, String> {
     reviewed(dir).await?;
+    changes_since(dir, REVIEWED).await
+}
 
-    let statuses = git(dir, &["diff", "--name-status", "--no-renames", REVIEWED]).await?;
-    let counts = git(dir, &["diff", "--numstat", "--no-renames", REVIEWED]).await?;
+/// Where an agent's branch left the project: what it has done since is what
+/// merging it would bring.
+async fn fork_point(project: &Path, dir: &Path) -> Result<String, String> {
+    let head = git(project, &["rev-parse", "HEAD"]).await?;
+    git(dir, &["merge-base", "HEAD", head.trim()]).await.map(|base| base.trim().to_owned())
+}
+
+/// What an agent did in its own folder, committed or not, and how many
+/// commits the project has made meanwhile that the branch doesn't have.
+pub async fn branch_changes(project: &Path, dir: &Path) -> Result<(Vec<Change>, u64), String> {
+    let base = fork_point(project, dir).await?;
+    let mut changes = changes_since(dir, &base).await?;
+    // The hooks file the app drops there for Codex is not the agent's work.
+    changes.retain(|change| !change.path.starts_with(".codex/"));
+    let head = git(project, &["rev-parse", "HEAD"]).await?;
+    let behind = git(dir, &["rev-list", "--count", &format!("HEAD..{}", head.trim())]).await?;
+    Ok((changes, behind.trim().parse().unwrap_or(0)))
+}
+
+pub async fn branch_diff(project: &Path, dir: &Path, path: &str) -> Result<String, String> {
+    safe(path)?;
+    let base = fork_point(project, dir).await?;
+    diff_since(dir, &base, path).await
+}
+
+async fn changes_since(dir: &Path, base: &str) -> Result<Vec<Change>, String> {
+    let statuses = git(dir, &["diff", "--name-status", "--no-renames", base]).await?;
+    let counts = git(dir, &["diff", "--numstat", "--no-renames", base]).await?;
     let count_of = |path: &str| {
         counts
             .lines()
@@ -288,7 +316,11 @@ pub async fn changes(dir: &Path) -> Result<Vec<Change>, String> {
 pub async fn diff(dir: &Path, path: &str) -> Result<String, String> {
     safe(path)?;
     reviewed(dir).await?;
-    let tracked = git(dir, &["diff", "--no-renames", REVIEWED, "--", path]).await?;
+    diff_since(dir, REVIEWED, path).await
+}
+
+async fn diff_since(dir: &Path, base: &str, path: &str) -> Result<String, String> {
+    let tracked = git(dir, &["diff", "--no-renames", base, "--", path]).await?;
     if !tracked.is_empty() {
         return Ok(tracked);
     }
@@ -408,6 +440,15 @@ mod tests {
         std::fs::write(own.join(".codex/hooks.json"), "{}").unwrap();
         assert!(!drop_worktree(&project, &own, "rovibe/test").await);
 
+        // What merging would bring, before it is done: the edit and the new
+        // file, uncommitted as they are, and not the app's own hooks file.
+        let (pending, behind) = branch_changes(&project, &own).await.unwrap();
+        let listed: Vec<(&str, &str)> = pending.iter().map(|change| (change.path.as_str(), change.status)).collect();
+        assert_eq!((listed, behind), (vec![("a.luau", "modified"), ("b.luau", "added")], 0));
+        let diff = branch_diff(&project, &own, "a.luau").await.unwrap();
+        assert!(diff.contains("-return 1") && diff.contains("+return 2"), "{diff}");
+        assert!(branch_diff(&project, &own, "../ailleurs").await.is_err());
+
         // Uncommitted work is committed for the agent, then merged.
         let merged = merge_worktree(&project, &own, "rovibe/test", "Claude Code #1").await.unwrap();
         assert!(merged.contains("1 commit"), "{merged}");
@@ -417,6 +458,10 @@ mod tests {
         assert!(!project.join(".codex").exists());
         let again = merge_worktree(&project, &own, "rovibe/test", "Claude Code #1").await.unwrap();
         assert!(again.contains("rien de nouveau"), "{again}");
+
+        // Seen from the branch before merging again: nothing left to bring.
+        let (pending, behind) = branch_changes(&project, &own).await.unwrap();
+        assert!(pending.is_empty() && behind > 0, "{} {behind}", pending.len());
 
         // Both sides change the same line: the merge is refused and undone.
         std::fs::write(project.join("a.luau"), "return \"projet\"

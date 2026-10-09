@@ -98,8 +98,8 @@ impl Handle {
     }
 }
 
-/// Settings live under Roaming, apart from the program, which the installer
-/// puts in `%LOCALAPPDATA%\RoVibe`.
+/// Settings live in `%USERPROFILE%\.rovibe`, apart from the program, which
+/// the installer puts in `%LOCALAPPDATA%\RoVibe`.
 pub fn data_dir() -> anyhow::Result<PathBuf> {
     // Tests run a server of their own, away from the user's projects.
     if let Some(dir) = std::env::var_os("ROVIBE_DATA_DIR") {
@@ -107,10 +107,17 @@ pub fn data_dir() -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(&dir)?;
         return Ok(dir);
     }
-    let dir = dirs::data_dir()
-        .ok_or_else(|| anyhow::anyhow!("no data directory"))?
-        .join("RoVibe");
+    // In the user's own folder rather than under AppData: Windows shows a
+    // program started from a packaged app (an agent's desktop app, a store
+    // app) an AppData of its own, and the app then had two sets of projects
+    // depending on what had launched it.
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("no home directory"))?
+        .join(".rovibe");
     std::fs::create_dir_all(&dir)?;
+    if let Some(former) = dirs::data_dir() {
+        legacy::adopt_appdata(&former.join("RoVibe"), &dir, false);
+    }
     legacy::adopt_settings(&dir);
     Ok(dir)
 }
@@ -212,6 +219,8 @@ fn router(state: Shared) -> Router {
         .route("/api/sessions", post(api::create_session))
         .route("/api/sessions/{id}", delete(api::remove_session))
         .route("/api/sessions/{id}/merge", post(api::merge_session))
+        .route("/api/sessions/{id}/work", get(api::session_work))
+        .route("/api/sessions/{id}/work/diff", get(api::session_work_diff))
         .route("/api/plugin/install", post(api::install_plugin))
         .route("/api/assets", get(api::list_assets))
         .route("/api/assets/{id}", delete(api::remove_asset).put(api::edit_asset))
@@ -279,8 +288,12 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
     log::init(&data_dir);
     log::info(format!("RoVibe {version} démarre, port {port}, réglages dans {}", data_dir.display()));
 
-    // Before the projects are read: their folder may change name here.
+    // Before the projects are read: their folder may change name here, and
+    // projects registered from another AppData join the list.
     if std::env::var_os("ROVIBE_DATA_DIR").is_none() {
+        if let Some(former) = dirs::data_dir() {
+            legacy::adopt_appdata(&former.join("RoVibe"), &data_dir, true);
+        }
         legacy::move_home(&projects::documents_home(), &data_dir);
     }
 

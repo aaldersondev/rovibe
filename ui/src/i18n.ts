@@ -18,6 +18,13 @@ const EXACT: Record<string, string> = {
   "Intègre le travail de cet agent au projet. Ce qu'il n'a pas commité l'est d'abord ; en cas de conflit, rien n'est modifié.":
     "Brings this agent's work into the project. Anything it left uncommitted is committed first; on a conflict, nothing changes.",
   Fusionner: "Merge",
+  "Voir et fusionner": "Review and merge",
+  "Montre ce que cet agent a fait sur sa branche, avant de l'intégrer au projet": "Shows what this agent did on its branch, before bringing it into the project",
+  "Cet agent n'a rien à fusionner : sa branche n'a rien que le projet n'ait déjà.": "This agent has nothing to merge: its branch has nothing the project doesn't already have.",
+  "Intègre ce travail au projet. Ce que l'agent n'a pas commité l'est d'abord ; en cas de conflit, rien n'est modifié.":
+    "Brings this work into the project. Anything the agent left uncommitted is committed first; on a conflict, nothing changes.",
+  "Fusionner dans le projet": "Merge into the project",
+  nouveau: "new",
   "Agrandir ou réduire": "Maximize or restore",
   "Fermer la session": "Close the session",
   démarre: "starting",
@@ -340,6 +347,12 @@ const EXACT: Record<string, string> = {
 /** Sentences with values: `{}` stands for each value, in order. */
 const WITH_VALUES: [string, string][] = [
   ["Erreur {}", "Error {}"],
+  ["Travail de {}", "Work of {}"],
+  ["{} fichier(s) que la fusion apporterait au projet, commités ou non par l'agent.", "{} file(s) the merge would bring into the project, committed by the agent or not."],
+  [
+    "Le projet a avancé de {} commit(s) depuis que cette branche en est partie : s'ils touchent les mêmes lignes, la fusion sera refusée sans rien modifier.",
+    "The project moved on by {} commit(s) since this branch left it: if they touch the same lines, the merge will be refused and nothing changed.",
+  ],
   ["Installer RoVibe {}", "Install RoVibe {}"],
   [
     "Travaille dans son propre dossier, sur la branche {}. Studio montre le projet tant que l'agent n'a pas connecté la synchro à sa branche.",

@@ -588,6 +588,31 @@ pub async fn merge_session(State(state): State<Shared>, Path(id): Path<String>) 
     Ok(Json(json!({ "message": message })))
 }
 
+/// The session's own folder and its project, for a session that has one.
+fn own_folder(state: &Shared, id: &str) -> Result<(pty::Worktree, crate::state::Project), (StatusCode, Json<Value>)> {
+    let session = state.sessions.lock().unwrap().get(id).cloned().ok_or_else(|| fail("Session inconnue"))?;
+    let worktree = session.worktree.clone().ok_or_else(|| fail("Cette session travaille dans le dossier du projet"))?;
+    let project = state.project(&session.info.project_id).ok_or_else(|| fail("Projet inconnu"))?;
+    Ok((worktree, project))
+}
+
+/// What merging a session's branch would bring into the project.
+pub async fn session_work(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
+    let (worktree, project) = own_folder(&state, &id)?;
+    let (changes, behind) = git::branch_changes(&project.path, &worktree.dir).await.map_err(fail)?;
+    Ok(Json(json!({ "changes": changes, "behind": behind, "branch": worktree.branch })))
+}
+
+pub async fn session_work_diff(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DiffQuery>,
+) -> ApiResult {
+    let (worktree, project) = own_folder(&state, &id)?;
+    let diff = git::branch_diff(&project.path, &worktree.dir, &query.path).await.map_err(fail)?;
+    Ok(Json(json!({ "diff": diff })))
+}
+
 pub async fn remove_session(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
     let removed = state.sessions.lock().unwrap().remove(&id);
     if let Some(session) = removed {
