@@ -300,11 +300,11 @@ function createPane(session: Session): Pane {
             "button",
             {
               class: "merge",
-              title: "Intègre le travail de cet agent au projet. Ce qu'il n'a pas commité l'est d'abord ; en cas de conflit, rien n'est modifié.",
-              onclick: () => run(() => api(`/api/sessions/${session.id}/merge`, "POST")),
+              title: "Montre ce que cet agent a fait sur sa branche, avant de l'intégrer au projet",
+              onclick: () => run(() => openWorkDialog(session)),
             },
             icon("merge"),
-            "Fusionner",
+            "Voir et fusionner",
           )
         : null,
       target,
@@ -624,6 +624,104 @@ function widen() {
   dialog.addEventListener("close", () => dialog.classList.remove("wide"), { once: true });
 }
 
+/** Shows a diff, each line colored by what it does to the file. */
+function paintDiff(view: HTMLElement, diff: string) {
+  view.replaceChildren(
+    ...diff.split("\n").map((line) => {
+      const kind = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ")
+        ? "meta"
+        : line.startsWith("@@")
+          ? "hunk"
+          : line.startsWith("+")
+            ? "plus"
+            : line.startsWith("-")
+              ? "minus"
+              : "";
+      // Code, not prose: it is shown as it is in every language.
+      const span = document.createElement("span");
+      if (kind) span.className = kind;
+      span.textContent = line + "\n";
+      return span;
+    }),
+  );
+  view.scrollTop = 0;
+}
+
+/** What an agent did on its own branch, to read before bringing it in. */
+async function openWorkDialog(session: Session) {
+  const work = await api<{ changes: Omit<Change, "agents">[]; behind: number; branch: string }>(`/api/sessions/${session.id}/work`);
+  const view = h("pre", { class: "log diff", tabindex: 0 });
+  const list = h("ul", { class: "bank changes" });
+
+  const show = async (path: string) => {
+    for (const item of list.children) item.toggleAttribute("aria-current", (item as HTMLElement).dataset.path === path);
+    try {
+      const { diff } = await api<{ diff: string }>(`/api/sessions/${session.id}/work/diff?path=${encodeURIComponent(path)}`);
+      paintDiff(view, diff);
+    } catch (error) {
+      view.textContent = (error as Error).message;
+    }
+  };
+
+  list.replaceChildren(
+    ...work.changes.map((change) =>
+      h(
+        "li",
+        { "data-path": change.path },
+        h(
+          "button",
+          { class: "quiet file", onclick: () => show(change.path) },
+          h("strong", {}, change.path),
+          h("small", {}, `${tr(CHANGE_LABELS[change.status])}, +${change.added} −${change.deleted}`),
+        ),
+      ),
+    ),
+  );
+
+  dialog.replaceChildren(
+    h("h2", {}, `Travail de ${session.title}`),
+    h(
+      "p",
+      { class: "notice" },
+      work.changes.length === 0
+        ? "Cet agent n'a rien à fusionner : sa branche n'a rien que le projet n'ait déjà."
+        : `${work.changes.length} fichier(s) que la fusion apporterait au projet, commités ou non par l'agent.`,
+    ),
+    work.behind > 0
+      ? h(
+          "p",
+          { class: "notice" },
+          `Le projet a avancé de ${work.behind} commit(s) depuis que cette branche en est partie : s'ils touchent les mêmes lignes, la fusion sera refusée sans rien modifier.`,
+        )
+      : "",
+    work.changes.length > 0 ? h("div", { class: "review" }, list, view) : "",
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { onclick: () => dialog.close() }, "Fermer"),
+      h(
+        "button",
+        {
+          class: "primary",
+          disabled: work.changes.length === 0,
+          title: "Intègre ce travail au projet. Ce que l'agent n'a pas commité l'est d'abord ; en cas de conflit, rien n'est modifié.",
+          onclick: () =>
+            run(async () => {
+              const result = await api(`/api/sessions/${session.id}/merge`, "POST");
+              dialog.close();
+              return result;
+            }),
+        },
+        icon("merge"),
+        "Fusionner dans le projet",
+      ),
+    ),
+  );
+  widen();
+  dialog.showModal();
+  if (work.changes[0]) void show(work.changes[0].path);
+}
+
 async function openChangesDialog(project: Project) {
   const { changes } = await api<{ changes: Change[] }>(`/api/projects/${project.id}/changes`);
   const view = h("pre", { class: "log diff", tabindex: 0 });
@@ -635,22 +733,7 @@ async function openChangesDialog(project: Project) {
     for (const item of list.children) item.toggleAttribute("aria-current", (item as HTMLElement).dataset.path === path);
     try {
       const { diff } = await api<{ diff: string }>(`/api/projects/${project.id}/changes/diff?path=${encodeURIComponent(path)}`);
-      // Lines are colored by what they do to the file, the way a diff reads.
-      view.replaceChildren(
-        ...diff.split("\n").map((line) => {
-          const kind = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ")
-            ? "meta"
-            : line.startsWith("@@")
-              ? "hunk"
-              : line.startsWith("+")
-                ? "plus"
-                : line.startsWith("-")
-                  ? "minus"
-                  : "";
-          return h("span", kind ? { class: kind } : {}, line + "\n");
-        }),
-      );
-      view.scrollTop = 0;
+      paintDiff(view, diff);
     } catch (error) {
       view.textContent = (error as Error).message;
     }

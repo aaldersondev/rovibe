@@ -26,7 +26,7 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **MCP `rovibe`** (serveur `rovibe-mcp`) : `run_luau` (edit, serveur et client), `get_tree`, `search`, `get_instance`, `get_console`, `check_code`, `publish`, `playtest`, `play_move`, `play_input`, `screenshot`, `asset_search`, `asset_preview`, `asset_insert`, `asset_save`, `sync_connect`, `studio_status`. Chaque session d'agent le reçoit automatiquement.
 - **Banque d'assets** : modèles enregistrés depuis Studio, chacun avec un aperçu photographié à l'enregistrement, dans `Documents\RoVibe\Banque`, réutilisables d'un projet à l'autre et rangés en collections. Un pack (un dossier de `.rbxm` ou `.rbxmx`) s'importe d'un coup, ses sous-dossiers devenant des collections ; les aperçus manquants se créent ensuite dans Studio. L'onglet Creator Store cherche les assets gratuits de Roblox avec leurs images et les insère dans Studio ; un agent voit ces mêmes images avec `asset_preview`. Les scripts d'un asset du Store sont désactivés à l'insertion.
 - **Coordination entre agents** : un fichier modifié par un agent lui est réservé 10 minutes ; un autre agent, Claude Code ou Codex, qui tente de l'éditer est refusé avec le nom de celui qui le tient. Le refus vaut aussi pour une commande shell qui écrirait dans ce fichier, et pour celles qui réécrivent tout le dossier (`git reset --hard`, `git stash`, `git checkout .`) tant qu'un autre agent tient quelque chose. Les agents peuvent aussi réserver à l'avance (`claim_files`) et voir qui fait quoi (`agents_status`).
-- **Branche à part** : avec cette option, chaque nouvel agent travaille dans une copie du projet, sur sa propre branche git. Plusieurs agents peuvent alors réécrire les mêmes fichiers ; tu fusionnes le travail de chacun depuis son panneau, et une fusion en conflit est annulée en nommant les fichiers concernés. Studio montre le projet ; un agent y fait apparaître sa branche avec `sync_connect`.
+- **Branche à part** : avec cette option, chaque nouvel agent travaille dans une copie du projet, sur sa propre branche git. Plusieurs agents peuvent alors réécrire les mêmes fichiers ; tu relis le travail de chacun depuis son panneau (fichiers et diff), puis tu le fusionnes, et une fusion en conflit est annulée en nommant les fichiers concernés. Studio montre le projet ; un agent y fait apparaître sa branche avec `sync_connect`.
 - **Notifications** : Windows te prévient quand un agent t'attend ou a fini, si la fenêtre n'est pas devant (réglable).
 - **Disposition** : les panneaux se réordonnent en les glissant par leur en-tête, et s'affichent tous côte à côte ou un seul à la fois avec des onglets. Les sessions interrompues attendent dans une bande à part.
 - **Projet protégé** : pour un jeu en ligne. Studio montre les changements avant chaque synchro au lieu de les appliquer d'office, et un agent doit obtenir ton accord dans l'app avant de connecter la synchro, comme pour publier.
@@ -37,7 +37,7 @@ Application desktop pour développer des jeux Roblox avec plusieurs agents de co
 - **Sessions persistantes** : les sessions Claude Code ouvertes à la fermeture de l'app sont proposées au lancement suivant ; « Reprendre » relance l'agent sur sa conversation.
 - **Changements** : la liste de ce que les agents ont modifié depuis ta dernière relecture, commité ou non, avec l'agent en cause et le diff ; chaque fichier s'annule séparément, « Tout accepter » repart de l'état courant.
 - **Réglages** : modèle par défaut de Claude Code et de Codex, dossier des nouveaux projets, raccourci de publication de Studio. Le modèle se choisit aussi session par session.
-- **Journal** : `%APPDATA%\RoVibe\rovibe.log`, consultable depuis l'app, trace les sessions, la synchro, les connexions de Studio, les outils en erreur et les mises à jour.
+- **Journal** : `%USERPROFILE%\.rovibe\rovibe.log`, consultable depuis l'app, trace les sessions, la synchro, les connexions de Studio, les outils en erreur et les mises à jour.
 - **Studio bloqué** : une boîte de dialogue ouverte dans Studio (par exemple « Auto Recovery » après une fermeture brutale) est signalée dans l'app et par `studio_status`, et les tests ne sont pas lancés tant qu'elle est là.
 - **Consignes** : une consigne s'envoie à plusieurs agents à la fois ; les consignes fréquentes s'enregistrent dans le projet (`.rovibe/consignes.json`).
 - **Import d'un jeu existant** : « Nouveau projet » peut partir des scripts de la place ouverte dans Studio. Seuls les scripts deviennent des fichiers ; la map et les interfaces restent dans la place et la synchro n'y touche pas.
@@ -57,7 +57,7 @@ Prérequis : Rust, Node 22, les Build Tools Visual Studio.
 .\scripts\release.ps1 0.3.0    # installeur signé + latest.json dans dist\release\0.3.0
 ```
 
-L'installeur (NSIS, par utilisateur, sans droits administrateur) place l'app dans `%LOCALAPPDATA%\RoVibe` ; les réglages sont dans `%APPDATA%\RoVibe`.
+L'installeur (NSIS, par utilisateur, sans droits administrateur) place l'app dans `%LOCALAPPDATA%\RoVibe` ; les réglages sont dans `%USERPROFILE%\.rovibe`.
 
 ### Mises à jour
 

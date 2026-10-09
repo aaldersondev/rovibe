@@ -26,7 +26,7 @@ A desktop app for building Roblox games with several coding agents working side 
 - **MCP `rovibe`** (server `rovibe-mcp`): `run_luau` (edit, server and client), `get_tree`, `search`, `get_instance`, `get_console`, `check_code`, `publish`, `playtest`, `play_move`, `play_input`, `screenshot`, `asset_search`, `asset_preview`, `asset_insert`, `asset_save`, `sync_connect`, `studio_status`. Every agent session gets it automatically.
 - **Asset bank**: models saved from Studio, each with a preview pictured when it is saved, in `Documents\RoVibe\Banque`, reusable from one project to the next and sorted in collections. A pack (a folder of `.rbxm` or `.rbxmx` files) is imported in one go, its sub-folders becoming collections; missing previews are then made in Studio. The Creator Store tab searches Roblox's free assets with their pictures and inserts them in Studio; an agent sees the same pictures with `asset_preview`. Scripts of a Store asset are disabled on insertion.
 - **Coordination between agents**: a file an agent changed is reserved for it for 10 minutes; another agent, Claude Code or Codex, that tries to edit it is refused and told who holds it. The same goes for a shell command that would write to that file, and for those that rewrite the whole folder (`git reset --hard`, `git stash`, `git checkout .`) while another agent holds anything. Agents can also reserve ahead (`claim_files`) and see who is doing what (`agents_status`).
-- **Own branch**: with this option, each new agent works in a copy of the project, on its own git branch. Several agents can then rewrite the same files; you merge each one's work from its pane, and a merge that conflicts is undone, naming the files involved. Studio shows the project; an agent brings its branch into Studio with `sync_connect`.
+- **Own branch**: with this option, each new agent works in a copy of the project, on its own git branch. Several agents can then rewrite the same files; you read each one's work from its pane (files and diff), then merge it, and a merge that conflicts is undone, naming the files involved. Studio shows the project; an agent brings its branch into Studio with `sync_connect`.
 - **Notifications**: Windows tells you when an agent needs you or is done, if the window isn't in front (configurable).
 - **Layout**: panes are reordered by dragging their header, and shown all side by side or one at a time with tabs. Interrupted sessions wait in a strip of their own.
 - **Protected project**: for a live game. Studio shows the changes before each sync instead of applying them, and an agent needs your approval in the app before connecting the sync, as it does to publish.
@@ -37,7 +37,7 @@ A desktop app for building Roblox games with several coding agents working side 
 - **Persistent sessions**: Claude Code sessions open when the app closes are offered again at the next launch; “Resume” restarts the agent on its conversation.
 - **Changes**: the list of what agents changed since your last review, committed or not, with the agent responsible and the diff; each file can be undone on its own, “Accept all” starts again from the current state.
 - **Settings**: default model for Claude Code and Codex, folder for new projects, Studio's publish shortcut. The model can also be chosen per session.
-- **Journal**: `%APPDATA%\RoVibe\rovibe.log`, readable from the app, records sessions, sync, Studio connections, failed tools and updates.
+- **Journal**: `%USERPROFILE%\.rovibe\rovibe.log`, readable from the app, records sessions, sync, Studio connections, failed tools and updates.
 - **Blocked Studio**: a dialog open in Studio (for instance “Auto Recovery” after a crash) is reported in the app and by `studio_status`, and tests are not started while it is there.
 - **Prompts**: one prompt goes to several agents at once; frequent prompts are saved in the project (`.rovibe/consignes.json`).
 - **Importing an existing game**: “New project” can start from the scripts of the place open in Studio. Only scripts become files; the map and the interfaces stay in the place and the sync leaves them alone.
@@ -61,7 +61,7 @@ Requirements: Rust, Node 22, the Visual Studio Build Tools.
 .\scripts\release.ps1 0.7.0    # signed installer + latest.json in dist\release\0.7.0
 ```
 
-The installer (NSIS, per user, no administrator rights) puts the app in `%LOCALAPPDATA%\RoVibe`; settings are in `%APPDATA%\RoVibe`.
+The installer (NSIS, per user, no administrator rights) puts the app in `%LOCALAPPDATA%\RoVibe`; settings are in `%USERPROFILE%\.rovibe`.
 
 ### Updates
 

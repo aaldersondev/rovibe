@@ -1,4 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import { expect, test, type Page } from "@playwright/test";
+
+import { dataDir } from "../playwright.config";
 
 import { api, frenchLeftIn, openProject, screen, withTerminals } from "./helpers";
 
@@ -189,4 +194,35 @@ test("in English, no French is left on the screens a user meets first", async ({
     document.querySelector("dialog")!.close();
     localStorage.removeItem("rovibe.lang");
   });
+});
+
+test("an agent's branch is read before it is merged", async ({ page }) => {
+  const project = await openProject(page, "Branches");
+  const state = await api<{ tools: { claude: boolean; git: boolean } }>(page, "/api/state");
+  // Needs a real agent to give a branch to: where none is installed, the
+  // server's own tests cover what this window shows.
+  test.skip(!state.tools.claude || !state.tools.git, "claude ou git absent");
+
+  await withTerminals(page, project.id, 0);
+  const session = await api<{ id: string; title: string; branch: string }>(page, "/api/sessions", "POST", {
+    project_id: project.id,
+    kind: "claude",
+    worktree: true,
+  });
+  const own = path.join(dataDir, "worktrees", project.id, session.branch.split("/")[1]);
+  fs.writeFileSync(path.join(own, "src", "shared", "Ajout.luau"), "return \"depuis la branche\"\n");
+
+  const pane = page.locator(".pane", { hasText: session.title });
+  await expect(pane.locator(".own-branch")).toBeVisible();
+  await pane.locator("button.merge").click();
+  const dialog = page.locator("dialog[open]");
+  await expect(dialog.locator("h2")).toHaveText(`Travail de ${session.title}`);
+  await expect(dialog.locator(".changes li")).toHaveCount(1);
+  await expect(dialog.locator(".changes li")).toContainText("src/shared/Ajout.luau");
+  await expect(dialog.locator(".diff")).toContainText("depuis la branche");
+
+  await dialog.locator("button.primary").click();
+  await expect(page.locator(".toast").last()).toContainText("fusionné");
+  expect(fs.existsSync(path.join(dataDir, "projets", "Branches", "src", "shared", "Ajout.luau"))).toBe(true);
+  await api(page, `/api/sessions/${session.id}`, "DELETE");
 });

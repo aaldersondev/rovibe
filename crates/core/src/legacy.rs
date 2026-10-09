@@ -43,6 +43,58 @@ pub fn adopt_settings(dir: &Path) {
     }
 }
 
+/// Left in a former settings folder once it has been taken over.
+const MOVED: &str = "moved-to-home";
+
+/// Takes over what the app kept under AppData, `former`, into `dir`. The
+/// first folder found gives everything; a later one, seen when the app is
+/// started from somewhere Windows shows another AppData, only adds its
+/// projects: the token and the settings already chosen stay.
+///
+/// Adding projects rewrites the list a running server holds in memory and
+/// would write back over: only a server that is starting may do it
+/// (`merging`); any other program leaves that folder for later.
+pub fn adopt_appdata(former: &Path, dir: &Path, merging: bool) {
+    if !former.join("projects.json").exists() || former.join(MOVED).exists() {
+        return;
+    }
+    if !dir.join("projects.json").exists() {
+        copy_settings(former, dir);
+    } else if merging {
+        merge_projects(&former.join("projects.json"), &dir.join("projects.json"));
+    } else {
+        return;
+    }
+    let _ = fs::write(former.join(MOVED), "Les réglages de RoVibe sont désormais dans le dossier .rovibe de l'utilisateur.\n");
+}
+
+/// Adds to `into` the projects of `from` that it doesn't have, told apart by
+/// their folder. One that would share a sync port gets the next free one.
+fn merge_projects(from: &Path, into: &Path) {
+    let read = |file: &Path| -> Vec<Value> {
+        fs::read(file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    };
+    let mut kept = read(into);
+    let before = kept.len();
+    for mut project in read(from) {
+        let known = kept.iter().any(|other| other["path"] == project["path"] || other["id"] == project["id"]);
+        if known || !project["path"].is_string() {
+            continue;
+        }
+        let taken: Vec<u64> = kept.iter().filter_map(|other| other["sync_port"].as_u64()).collect();
+        if project["sync_port"].as_u64().is_none_or(|port| taken.contains(&port)) {
+            let free = (34873..35373).find(|port| !taken.contains(port)).unwrap_or(34873);
+            project["sync_port"] = Value::from(free);
+        }
+        kept.push(project);
+    }
+    if kept.len() > before {
+        if let Ok(bytes) = serde_json::to_vec_pretty(&kept) {
+            let _ = fs::write(into, bytes);
+        }
+    }
+}
+
 fn swap_prefix(value: &mut Value, old: &Path, new: &Path) -> bool {
     let Some(inside) = value.as_str().and_then(|path| Path::new(path).strip_prefix(old).ok()) else {
         return false;
@@ -168,6 +220,58 @@ mod tests {
         assert!(copy_settings(&old, &new));
         assert_eq!(fs::read_to_string(new.join("token")).unwrap(), "t");
         assert!(!new.join("essaim.log").exists());
+    }
+
+    #[test]
+    fn two_former_settings_folders_end_up_as_one() {
+        let root = tempfile::tempdir().unwrap();
+        let (mine, theirs, home) = (root.path().join("a"), root.path().join("b"), root.path().join("home"));
+        for dir in [&mine, &theirs, &home] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(mine.join("token"), "jeton-a").unwrap();
+        fs::write(mine.join("settings.json"), "{}").unwrap();
+        fs::write(
+            mine.join("projects.json"),
+            json!([{ "id": "1", "name": "test", "path": "C:/jeux/test", "sync_port": 34873 }]).to_string(),
+        )
+        .unwrap();
+        fs::write(theirs.join("token"), "jeton-b").unwrap();
+        fs::write(
+            theirs.join("projects.json"),
+            json!([
+                { "id": "2", "name": "Demo", "path": "C:/jeux/Demo", "sync_port": 34873 },
+                { "id": "3", "name": "Jeu en ligne", "path": "C:/jeux/Live", "sync_port": 34874, "protected": true },
+                { "id": "9", "name": "test, vu d'ailleurs", "path": "C:/jeux/test", "sync_port": 34880 }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        // The first one found gives everything, token included.
+        adopt_appdata(&mine, &home, false);
+        assert_eq!(fs::read_to_string(home.join("token")).unwrap(), "jeton-a");
+        // A program that isn't a starting server leaves the second alone.
+        adopt_appdata(&theirs, &home, false);
+        assert!(!fs::read_to_string(home.join("projects.json")).unwrap().contains("Demo"));
+        // A starting server adds the projects the first didn't have.
+        adopt_appdata(&theirs, &home, true);
+        assert_eq!(fs::read_to_string(home.join("token")).unwrap(), "jeton-a");
+        let projects: Value = serde_json::from_slice(&fs::read(home.join("projects.json")).unwrap()).unwrap();
+        let listed: Vec<(&str, u64, bool)> = projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|project| (project["name"].as_str().unwrap(), project["sync_port"].as_u64().unwrap(), project["protected"] == true))
+            .collect();
+        // Demo shared a port with `test` and got another; protection travels.
+        assert_eq!(listed, [("test", 34873, false), ("Demo", 34874, false), ("Jeu en ligne", 34875, true)]);
+
+        // Each folder is taken over once: what the user removes stays removed.
+        fs::write(home.join("projects.json"), "[]").unwrap();
+        adopt_appdata(&mine, &home, true);
+        adopt_appdata(&theirs, &home, true);
+        assert_eq!(fs::read_to_string(home.join("projects.json")).unwrap(), "[]");
     }
 
     #[test]
