@@ -181,6 +181,17 @@ pub fn release_all(state: &Shared, session_id: &str) {
         .retain(|lock| lock.session_id != session_id);
 }
 
+/// A tool's name as a person would say it. Agents name the tools of an MCP
+/// server `mcp__server__tool`: ours are shown bare, those of other servers
+/// with the server they come from.
+fn tool_label(tool: &str) -> String {
+    match tool.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")) {
+        Some(("rovibe", name)) => name.to_owned(),
+        Some((server, name)) => format!("{name} ({server})"),
+        None => tool.to_owned(),
+    }
+}
+
 pub fn files_of(state: &Shared, session_id: &str) -> Vec<String> {
     state
         .locks
@@ -416,13 +427,14 @@ pub async fn hook(
 
             // File edits already carry a more useful detail than a tool name.
             if before != "working" || !session.status.lock().unwrap().detail.starts_with("modifie") {
-                session.set_status("working", tool);
+                session.set_status("working", tool_label(tool));
             }
         }
         "PermissionRequest" => {
             // Answering stays the user's: the empty verdict leaves the
             // agent's own prompt on screen.
             let tool = event["tool_name"].as_str().unwrap_or_default();
+            let tool = tool_label(tool);
             session.set_status("waiting", format!("demande l'autorisation d'utiliser {tool}"));
             let _ = state.attention.send(session.info.title.clone());
             state.announce(&session.info.title, &format!("Demande l'autorisation d'utiliser {tool}"), true);
@@ -598,6 +610,14 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn a_tool_is_named_the_way_a_person_would() {
+        assert_eq!(tool_label("mcp__rovibe__asset_search"), "asset_search");
+        assert_eq!(tool_label("mcp__github__create_issue"), "create_issue (github)");
+        assert_eq!(tool_label("Bash"), "Bash");
+        assert_eq!(tool_label("mcp__sans_outil"), "mcp__sans_outil");
+    }
 
     fn project() -> Project {
         Project {
