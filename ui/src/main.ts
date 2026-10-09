@@ -2301,6 +2301,8 @@ function render() {
     // After a reload, the page is asked for again but not built yet.
     else if (!settingsPage.hasChildNodes()) void openSettings();
   }
+  // Messages appear above the command bar, never over its send button.
+  toasts.style.bottom = `${composer.hidden ? 14 : composer.offsetHeight + 12}px`;
   if (setupOpen) drawSetup();
   // A fresh install starts here, once.
   if (state.projects.length === 0 && !localStorage.getItem("rovibe.welcomed") && !dialog.open) {

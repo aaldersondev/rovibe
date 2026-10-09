@@ -28,8 +28,8 @@ if (-not $Unsigned -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
     if (-not (Test-Path $key)) { throw "Clé de signature introuvable : $key" }
     $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $key -Raw
 }
-# A running copy from dist\RoVibe locks the sync server this script replaces.
-if (Get-Process rovibe, rovibe-sync -ErrorAction SilentlyContinue) { throw "Ferme RoVibe avant de construire une release" }
+# A running RoVibe is no obstacle: its server runs from a copy of its own,
+# and nothing here writes over the window's program.
 
 # The UI is embedded in the binary and the sync server ships beside it.
 Push-Location "$root\ui"; npm install --no-fund --no-audit; npm run build; Pop-Location
