@@ -1,0 +1,10 @@
+# Places Studio : binaires, à enregistrer depuis Studio
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
+
+# Produits par roblox-ts et npm : refaits à chaque compilation
+/node_modules/
+/out/
+/include/

@@ -162,6 +162,9 @@ pub async fn drop_worktree(project: &Path, dir: &Path, branch: &str) -> bool {
     if !(clean && merged) {
         return false;
     }
+    // The packages it borrowed from the project are unlinked first, so that
+    // deleting the folder can't reach them.
+    crate::typescript::unshare_modules(dir);
     let dir = dir.to_string_lossy();
     let removed = git(project, &["worktree", "remove", "--force", &dir]).await.is_ok();
     if removed {

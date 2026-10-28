@@ -24,6 +24,10 @@ interface Project {
   protected: boolean;
   /** Studio is being shown an agent's branch instead of the project. */
   sync_branch: boolean;
+  /** Written in TypeScript and compiled to Luau by roblox-ts. */
+  typescript: boolean;
+  /** The compiler that runs with the sync, for a TypeScript project. */
+  compiler: { compiling: boolean; ready: boolean; errors: number; first_errors: string[] } | null;
 }
 
 interface Session {
@@ -64,7 +68,7 @@ interface State {
   projects: Project[];
   sessions: Session[];
   studios: Studio[];
-  tools: { claude: boolean; codex: boolean; git: boolean; sync: boolean };
+  tools: { claude: boolean; codex: boolean; git: boolean; sync: boolean; node: boolean };
   checkers: { selene: boolean; luau_lsp: boolean };
   approvals: { id: number; project_id: string; requester: string; request: string }[];
   /** Version of an update waiting to be installed, if any. */
@@ -466,21 +470,49 @@ function openProjectDialog() {
     h("option", { value: "" }, open.length === 0 ? "Aucune place ouverte dans Studio" : "Ne rien importer : projet vide"),
     ...open.map((studio) => h("option", { value: studio.id }, `Importer les scripts de « ${studio.name} »`)),
   );
+  // An imported place keeps the language of its scripts.
+  const language = h(
+    "select",
+    {},
+    h("option", { value: "typescript" }, "TypeScript, compilé en Luau (recommandé)"),
+    h("option", { value: "luau" }, "Luau"),
+  );
+  const languageLabel = h(
+    "label",
+    {},
+    h("span", {}, "Langage des agents. En TypeScript, chaque type de l'API Roblox est vérifié avant que le code n'arrive dans Studio."),
+    language,
+  );
+  importStudio.addEventListener("change", () => {
+    languageLabel.hidden = Boolean(importStudio.value);
+  });
+  const create = h("button", { class: "primary", type: "submit" }, "Créer le projet") as HTMLButtonElement;
   const form = h(
     "form",
     {
       method: "dialog",
       onsubmit: (event: Event) => {
         event.preventDefault();
+        // A TypeScript project installs its compiler first: that can take a while.
+        create.disabled = true;
+        create.textContent = tr(
+          !importStudio.value && language.value === "typescript" ? "Installation du compilateur…" : "Création…",
+        );
         void run(async () => {
-          const project = await api<Project & { message?: string }>("/api/projects", "POST", {
-            name: name.value,
-            path: path.value,
-            import_studio: importStudio.value ? Number(importStudio.value) : null,
-          });
-          select(project.id);
-          dialog.close();
-          return project;
+          try {
+            const project = await api<Project & { message?: string }>("/api/projects", "POST", {
+              name: name.value,
+              path: path.value,
+              import_studio: importStudio.value ? Number(importStudio.value) : null,
+              language: language.value,
+            });
+            select(project.id);
+            dialog.close();
+            return project;
+          } finally {
+            create.disabled = false;
+            create.textContent = tr("Créer le projet");
+          }
         });
       },
     },
@@ -498,11 +530,12 @@ function openProjectDialog() {
       h("span", {}, "Partir d'un jeu existant. Seuls les scripts deviennent des fichiers ; la place n'est pas modifiée."),
       importStudio,
     ),
+    languageLabel,
     h(
       "div",
       { class: "actions" },
       h("button", { type: "button", onclick: () => dialog.close() }, "Annuler"),
-      h("button", { class: "primary", type: "submit" }, "Créer le projet"),
+      create,
     ),
   );
   dialog.replaceChildren(form);
@@ -1641,6 +1674,12 @@ function setupItems(current: State) {
       hint: "Sert à l'historique, à la relecture des changements et aux branches à part. À installer depuis git-scm.com.",
     },
     {
+      name: "Node.js",
+      ok: current.tools.node,
+      needed: false,
+      hint: "Pour les projets en TypeScript, le langage proposé par défaut : il fait tourner leur compilateur, roblox-ts. À installer depuis nodejs.org (version LTS), puis relance RoVibe.",
+    },
+    {
       name: "Moteur de synchro",
       ok: current.tools.sync,
       needed: true,
@@ -1966,6 +2005,28 @@ function renderRail(current: State) {
   );
 }
 
+/** Where the TypeScript stands: compiled, compiling, or held back by errors. */
+function compilerPill(project: Project) {
+  const compiler = project.compiler;
+  const [state, text, title] = !compiler
+    ? ["off", "TypeScript : compilateur arrêté", "Le compilateur roblox-ts tourne avec la synchro : démarre-la pour que le code arrive dans Studio."]
+    : compiler.compiling || !compiler.ready
+      ? ["busy", "TypeScript : compilation…", "roblox-ts transforme le TypeScript de src/ en Luau dans out/."]
+      : compiler.errors > 0
+        ? [
+            "alert",
+            `TypeScript : ${compiler.errors} erreur(s)`,
+            `${tr("Ces fichiers ne compilent pas et n'arrivent pas dans Studio :")}\n${compiler.first_errors.join("\n")}`,
+          ]
+        : ["on", "TypeScript : compilé", "Tout le TypeScript compile : Studio a la dernière version du code."];
+  return h(
+    "span",
+    { class: state === "alert" ? "pill alert" : "pill", title },
+    h("span", { class: state === "on" ? "dot on" : state === "busy" ? "dot busy" : "dot off" }),
+    text,
+  );
+}
+
 function renderBar(current: State, project: Project) {
   const edits = current.studios.filter((studio) => studio.context === "edit");
   const bound = project.place_id != null || project.place_name != null;
@@ -2063,6 +2124,7 @@ function renderBar(current: State, project: Project) {
               ? "Synchro : branche d'un agent"
               : `Synchro : port ${project.sync_port}`,
         ),
+        project.typescript ? compilerPill(project) : "",
         h(
           "button",
           {

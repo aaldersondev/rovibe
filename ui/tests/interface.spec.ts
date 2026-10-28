@@ -164,7 +164,7 @@ test("the checklist says what is in place and what is missing", async ({ page })
   await openProject(page);
   await page.locator(".rail .tool", { hasText: "Premiers pas" }).click();
   const items = page.locator("dialog[open] .setup li");
-  await expect(items).toHaveCount(8);
+  await expect(items).toHaveCount(9);
   await expect(items.filter({ hasText: "Git" })).toHaveClass(/ok/);
 });
 
@@ -225,4 +225,30 @@ test("an agent's branch is read before it is merged", async ({ page }) => {
   await expect(page.locator(".toast").last()).toContainText("fusionné");
   expect(fs.existsSync(path.join(dataDir, "projets", "Branches", "src", "shared", "Ajout.luau"))).toBe(true);
   await api(page, `/api/sessions/${session.id}`, "DELETE");
+});
+
+test("a new project is written in TypeScript, and its header says whether it compiles", async ({ page }) => {
+  // Installs the real compiler with npm: the slow scenario of the lot.
+  test.setTimeout(240_000);
+  await openProject(page);
+  await page.locator(".rail-head .add").click();
+  const dialog = page.locator("dialog[open]");
+  await expect(dialog.locator("select").last()).toHaveValue("typescript");
+
+  const folder = path.join(dataDir, "projets", "Obby");
+  await dialog.locator('input[name="name"]').fill("Obby");
+  await dialog.locator('input[name="path"]').fill(folder);
+  await dialog.locator('button[type="submit"]').click();
+  const pill = page.locator(".bar .pill", { hasText: "TypeScript" });
+  await expect(pill).toHaveText("TypeScript : compilé", { timeout: 180_000 });
+  expect(fs.existsSync(path.join(folder, "out", "server", "main.server.luau"))).toBe(true);
+
+  // A file that doesn't compile is named in the header, and leaves it once fixed.
+  const lava = path.join(folder, "src", "server", "lava.server.ts");
+  fs.writeFileSync(lava, "const damage: number = \"beaucoup\";\nprint(damage);\n");
+  await expect(pill).toHaveText("TypeScript : 1 erreur(s)", { timeout: 20_000 });
+  await expect(pill).toHaveAttribute("title", /lava\.server\.ts:1/);
+  fs.writeFileSync(lava, "const damage = 50;\nprint(damage);\n");
+  await expect(pill).toHaveText("TypeScript : compilé", { timeout: 20_000 });
+  expect(fs.readFileSync(path.join(folder, "out", "server", "lava.server.luau"), "utf8")).toContain("local damage = 50");
 });

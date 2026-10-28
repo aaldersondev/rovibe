@@ -25,6 +25,9 @@ pub struct SyncProc {
     /// asked to see its own branch in Studio.
     pub source: PathBuf,
     pub log: Arc<Mutex<VecDeque<String>>>,
+    /// For a TypeScript project, the compiler that writes the `out/` this
+    /// server carries to Studio.
+    pub compiler: Option<Arc<crate::typescript::Watch>>,
     stop: Arc<Notify>,
 }
 
@@ -101,6 +104,12 @@ pub async fn serve(state: &Shared, project: &Project) -> Result<u16, String> {
             }
         }
     }
+    // A folder never compiled (an agent's new branch) would reach Studio
+    // empty until the watching compiler is done, and Studio would see its
+    // scripts deleted then put back: it is compiled once beforehand.
+    if crate::typescript::is_project(&project.path) && !project.path.join("out").exists() {
+        let _ = crate::typescript::build_once(&project.path).await;
+    }
     start(state, project)
 }
 
@@ -117,6 +126,22 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
         ));
     }
 
+    // TypeScript: the server carries the compiler's output, kept up to date
+    // by a compiler watching the same folder for as long as the server runs.
+    let compiler = if crate::typescript::is_project(&project.path) {
+        crate::typescript::prepare_out(&project.path);
+        let notified = state.clone();
+        match crate::typescript::watch(&project.path, &project.name, move || notified.notify()) {
+            Ok(watch) => Some(watch),
+            Err(error) => {
+                crate::log::warn(format!("TypeScript de « {} » non compilé : {error}", project.name));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut command = Command::new(binary);
     command
         .arg("serve")
@@ -131,7 +156,15 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(compiler) = &compiler {
+                compiler.stop();
+            }
+            return Err(error.to_string());
+        }
+    };
     if let Some(process_id) = child.id() {
         crate::jobs::adopt(process_id);
     }
@@ -151,6 +184,7 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
             port: project.sync_port,
             source: project.path.clone(),
             log,
+            compiler: compiler.clone(),
             stop: stop.clone(),
         },
     );
@@ -175,9 +209,18 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
                 crate::log::info(format!("Synchro de « {name} » arrêtée"));
             }
         }
+        if let Some(compiler) = compiler {
+            compiler.stop();
+        }
         state.syncs.lock().unwrap().remove(&project_id);
         state.notify();
     });
 
     Ok(project.sync_port)
+}
+
+/// The compiler watching a project's folder, if it is a TypeScript project
+/// whose sync runs.
+pub fn compiler(state: &Shared, project_id: &str) -> Option<Arc<crate::typescript::Watch>> {
+    state.syncs.lock().unwrap().get(project_id).and_then(|running| running.compiler.clone())
 }

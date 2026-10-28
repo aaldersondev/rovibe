@@ -196,22 +196,38 @@ pub async fn check(state: &Shared, project: &Project, paths: &[String], with_war
         }
     }
 
-    let (lints, typed) = tokio::join!(
-        selene(state, project, &targets, Duration::from_secs(60)),
-        types(state, project, &targets)
-    );
-    if lints.is_none() && typed.is_none() {
-        return Err("Aucun vérificateur n'est installé (selene, luau-lsp) : lance scripts\\get-tools.ps1".into());
-    }
+    let mut all: Vec<Diagnostic> = if crate::typescript::is_project(&project.path) {
+        // The compiler is the type checker. selene still reads the Luau
+        // written by hand next to the TypeScript, if there is any.
+        let compiled = typescript_findings(state, project).await?;
+        let wanted: Vec<String> = targets
+            .iter()
+            .map(|target| target.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_owned())
+            .collect();
+        let lints = selene(state, project, &targets, Duration::from_secs(60)).await;
+        compiled
+            .iter()
+            .filter(|finding| finding.path.is_empty() || wanted.iter().any(|target| target == "src" || finding.path.starts_with(target.as_str())))
+            .map(|finding| finding.diagnostic())
+            .chain(lints.into_iter().flatten())
+            .collect()
+    } else {
+        let (lints, typed) = tokio::join!(
+            selene(state, project, &targets, Duration::from_secs(60)),
+            types(state, project, &targets)
+        );
+        if lints.is_none() && typed.is_none() {
+            return Err("Aucun vérificateur n'est installé (selene, luau-lsp) : lance scripts\\get-tools.ps1".into());
+        }
 
-    // Both checkers report an undefined name; selene's wording names the rule.
-    let has_lints = lints.is_some();
-    let typed = typed
-        .into_iter()
-        .flatten()
-        .filter(|diagnostic| !(has_lints && diagnostic.text.contains("Unknown global")));
-
-    let mut all: Vec<Diagnostic> = lints.into_iter().flatten().chain(typed).collect();
+        // Both checkers report an undefined name; selene's wording names the rule.
+        let has_lints = lints.is_some();
+        let typed = typed
+            .into_iter()
+            .flatten()
+            .filter(|diagnostic| !(has_lints && diagnostic.text.contains("Unknown global")));
+        lints.into_iter().flatten().chain(typed).collect()
+    };
     all.sort_by(|a, b| b.error.cmp(&a.error).then_with(|| a.text.cmp(&b.text)));
     all.dedup_by(|a, b| a.text == b.text);
 
@@ -253,14 +269,30 @@ pub async fn check(state: &Shared, project: &Project, paths: &[String], with_war
     Ok(text)
 }
 
+/// What roblox-ts says of the project: the watching compiler's last word
+/// once it is done with the latest saves, or a compilation of its own when
+/// none is running.
+async fn typescript_findings(state: &Shared, project: &Project) -> Result<Vec<crate::typescript::Finding>, String> {
+    if let Some(watch) = crate::sync::compiler(state, &project.id).filter(|watch| watch.dir == project.path) {
+        if let Some(findings) = watch.settle(Duration::from_secs(30)).await {
+            return Ok(findings);
+        }
+    }
+    crate::typescript::build_once(&project.path).await
+}
+
 /// Checks one file right after an agent wrote it. Only errors come back:
 /// this interrupts the agent, which warnings aren't worth.
 pub async fn after_edit(state: &Shared, project: &Project, file: &Path) -> Option<String> {
-    let is_luau = file
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| matches!(extension, "luau" | "lua"));
-    if !is_luau || !file.starts_with(&project.path) || !file.exists() {
+    let extension = file.extension().and_then(|extension| extension.to_str()).unwrap_or_default();
+    if !file.starts_with(&project.path) || !file.exists() {
+        return None;
+    }
+    if matches!(extension, "ts" | "tsx") && crate::typescript::is_project(&project.path) {
+        return after_typescript_edit(state, project, file).await;
+    }
+    let is_luau = matches!(extension, "luau" | "lua");
+    if !is_luau {
         return None;
     }
 
@@ -274,6 +306,30 @@ pub async fn after_edit(state: &Shared, project: &Project, file: &Path) -> Optio
     (!errors.is_empty()).then(|| {
         format!(
             "selene signale des erreurs dans le fichier que tu viens d'écrire :\n{}\nCorrige-les avant de continuer.",
+            errors.join("\n")
+        )
+    })
+}
+
+/// A TypeScript file that doesn't compile never reaches Studio: the agent
+/// hears it at once. Only that file's errors: another agent's half-written
+/// file isn't this one's business.
+async fn after_typescript_edit(state: &Shared, project: &Project, file: &Path) -> Option<String> {
+    let relative = strip_root(project, &file.to_string_lossy());
+    let watch = crate::sync::compiler(state, &project.id).filter(|watch| watch.dir == project.path);
+    let findings = match watch {
+        Some(watch) => watch.settle(Duration::from_secs(10)).await?,
+        None => crate::typescript::build_once(&project.path).await.ok()?,
+    };
+    let errors: Vec<String> = findings
+        .iter()
+        .filter(|finding| finding.error && finding.path.eq_ignore_ascii_case(&relative))
+        .take(10)
+        .map(|finding| finding.diagnostic().text)
+        .collect();
+    (!errors.is_empty()).then(|| {
+        format!(
+            "roblox-ts ne compile pas le fichier que tu viens d'écrire, il n'arrivera donc pas dans Studio :\n{}\nCorrige-le avant de continuer.",
             errors.join("\n")
         )
     })

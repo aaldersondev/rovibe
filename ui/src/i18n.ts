@@ -50,6 +50,21 @@ const EXACT: Record<string, string> = {
     "Start from an existing game. Only scripts become files; the place is left untouched.",
   Annuler: "Cancel",
   "Créer le projet": "Create the project",
+  "Création…": "Creating…",
+  "Installation du compilateur…": "Installing the compiler…",
+  "TypeScript, compilé en Luau (recommandé)": "TypeScript, compiled to Luau (recommended)",
+  "Langage des agents. En TypeScript, chaque type de l'API Roblox est vérifié avant que le code n'arrive dans Studio.":
+    "Language the agents write in. In TypeScript, every type of Roblox's API is checked before the code reaches Studio.",
+
+  // TypeScript compiler
+  "TypeScript : compilateur arrêté": "TypeScript: compiler stopped",
+  "Le compilateur roblox-ts tourne avec la synchro : démarre-la pour que le code arrive dans Studio.":
+    "The roblox-ts compiler runs with the sync: start it so the code reaches Studio.",
+  "TypeScript : compilation…": "TypeScript: compiling…",
+  "roblox-ts transforme le TypeScript de src/ en Luau dans out/.": "roblox-ts turns the TypeScript in src/ into Luau in out/.",
+  "Ces fichiers ne compilent pas et n'arrivent pas dans Studio :": "These files don't compile and don't reach Studio:",
+  "TypeScript : compilé": "TypeScript: compiled",
+  "Tout le TypeScript compile : Studio a la dernière version du code.": "All the TypeScript compiles: Studio has the latest code.",
   "Documents\\RoVibe\\<nom>": "Documents\\RoVibe\\<name>",
 
   // History and changes
@@ -261,6 +276,8 @@ const EXACT: Record<string, string> = {
   "Sert à l'historique, à la relecture des changements et aux branches à part. À installer depuis git-scm.com.":
     "Needed for history, change review and own branches. Install it from git-scm.com.",
   "Moteur de synchro": "Sync engine",
+  "Pour les projets en TypeScript, le langage proposé par défaut : il fait tourner leur compilateur, roblox-ts. À installer depuis nodejs.org (version LTS), puis relance RoVibe.":
+    "For TypeScript projects, the default language: it runs their compiler, roblox-ts. Install it from nodejs.org (LTS version), then restart RoVibe.",
   "rovibe-sync.exe manque à côté de l'app : réinstalle RoVibe, ou compile vendor/sync.":
     "rovibe-sync.exe is missing next to the app: reinstall RoVibe, or build vendor/sync.",
   "Plugin Roblox Studio": "Roblox Studio plugin",
@@ -360,6 +377,7 @@ const WITH_VALUES: [string, string][] = [
   ],
   ["Arrêter « {} » ?", "Stop “{}”?"],
   ["Importer les scripts de « {} »", "Import the scripts of “{}”"],
+  ["TypeScript : {} erreur(s)", "TypeScript: {} error(s)"],
   ["{} fichier(s) modifié(s) depuis le dernier point de sauvegarde.", "{} file(s) changed since the last checkpoint."],
   ["Revenir à « {} » ? L'état actuel sera sauvegardé avant.", "Go back to “{}”? The current state will be saved first."],
   ["Annuler les changements de {} ?", "Undo the changes to {}?"],

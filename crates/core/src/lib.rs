@@ -24,6 +24,7 @@ mod settings;
 mod state;
 mod studio;
 mod sync;
+mod typescript;
 
 use std::{path::PathBuf, sync::Arc};
 

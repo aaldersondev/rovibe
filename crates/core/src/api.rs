@@ -81,6 +81,7 @@ struct Installed {
     selene: bool,
     luau_lsp: bool,
     plugin: bool,
+    node: bool,
 }
 
 static INSTALLED: std::sync::Mutex<Option<(std::time::Instant, Installed)>> = std::sync::Mutex::new(None);
@@ -101,6 +102,7 @@ fn installed() -> Installed {
         selene,
         luau_lsp,
         plugin: plugin_installed(),
+        node: crate::typescript::node_available(),
     };
     *cache = Some((std::time::Instant::now(), found));
     found
@@ -132,6 +134,22 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
                 "sync_log": syncs.get(&project.id).map(|running| {
                     let log = running.log.lock().unwrap();
                     log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>()
+                }),
+                "typescript": crate::typescript::is_project(&project.path),
+                "compiler": syncs.get(&project.id).and_then(|running| running.compiler.as_ref()).map(|compiler| {
+                    let status = compiler.status();
+                    let errors: Vec<String> = status
+                        .findings
+                        .iter()
+                        .filter(|finding| finding.error)
+                        .map(|finding| finding.diagnostic().text)
+                        .collect();
+                    json!({
+                        "compiling": status.compiling,
+                        "ready": status.cycles > 0,
+                        "errors": errors.len(),
+                        "first_errors": errors.into_iter().take(5).collect::<Vec<_>>(),
+                    })
                 }),
             })
         })
@@ -220,7 +238,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
         "projects": projects,
         "sessions": sessions,
         "studios": studios,
-        "tools": { "claude": found.claude, "codex": found.codex, "git": found.git, "sync": found.sync },
+        "tools": { "claude": found.claude, "codex": found.codex, "git": found.git, "sync": found.sync, "node": found.node },
         "plugin_installed": found.plugin,
     }))
 }
@@ -232,6 +250,9 @@ pub struct NewProject {
     /// Build the project from the scripts of a place open in Studio: the id
     /// of that Studio connection, as listed in the state.
     import_studio: Option<u64>,
+    /// For a new project from the template; an import stays in Luau.
+    #[serde(default)]
+    language: projects::Language,
 }
 
 pub async fn create_project(State(state): State<Shared>, Json(body): Json<NewProject>) -> ApiResult {
@@ -254,7 +275,7 @@ pub async fn create_project(State(state): State<Shared>, Json(body): Json<NewPro
     };
 
     let (project, report) =
-        projects::create(&state, &body.name, body.path, export.as_ref()).map_err(fail)?;
+        projects::create(&state, &body.name, body.path, export.as_ref(), body.language).map_err(fail)?;
 
     crate::log::info(format!("Projet « {} » créé dans {}", project.name, project.path.display()));
     let mut notes = Vec::new();
@@ -265,6 +286,21 @@ pub async fn create_project(State(state): State<Shared>, Json(body): Json<NewPro
                 "{} scripts sont restés dans Studio : la liste est dans IMPORT.md.",
                 report.skipped.len()
             ));
+        }
+    }
+    // A TypeScript project needs its compiler before anything reaches
+    // Studio; the first compilation then gives the sync an `out/` to carry.
+    if crate::typescript::is_project(&project.path) && !crate::typescript::has_compiler(&project.path) {
+        match crate::typescript::install(&project.path).await {
+            Ok(()) => {
+                if let Err(error) = crate::typescript::build_once(&project.path).await {
+                    notes.push(format!("Première compilation impossible : {error}"));
+                }
+            }
+            Err(error) => {
+                crate::log::warn(format!("Paquets de « {} » non installés : {error}", project.name));
+                notes.push(format!("{error}. Lance « npm install » dans le dossier du projet, puis redémarre la synchro."));
+            }
         }
     }
     if let Err(error) = git::ensure_repo(&project.path).await {
@@ -557,6 +593,11 @@ pub async fn create_session(State(state): State<Shared>, Json(body): Json<NewSes
         git::add_worktree(&project.path, &worktree.dir, &worktree.branch)
             .await
             .map_err(fail)?;
+        if crate::typescript::is_project(&project.path) {
+            if let Err(error) = crate::typescript::share_modules(&project.path, &worktree.dir) {
+                crate::log::warn(format!("Branche {} sans paquets npm : {error}", worktree.branch));
+            }
+        }
         Some(worktree)
     } else {
         None

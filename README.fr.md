@@ -7,7 +7,7 @@
 ### Vibe Code Together in Roblox Studio.
 
 Claude Code et Codex côte à côte sur un même jeu Roblox.<br>
-Ils écrivent du Luau dans de vrais fichiers, Studio le reflète en direct, et les agents jouent au jeu pour vérifier leur travail.
+Ils écrivent du TypeScript typé, compilé en Luau à chaque enregistrement. Studio le reflète en direct, et les agents jouent au jeu pour vérifier leur travail.
 
 [![Dernière version](https://img.shields.io/github/v/release/aaldersondev/rovibe?label=version&color=8B5CF6)](https://github.com/aaldersondev/rovibe/releases/latest)
 [![Téléchargements](https://img.shields.io/github/downloads/aaldersondev/rovibe/total?label=t%C3%A9l%C3%A9chargements&color=22D3EE)](https://github.com/aaldersondev/rovibe/releases)
@@ -30,6 +30,7 @@ Ils écrivent du Luau dans de vrais fichiers, Studio le reflète en direct, et l
 ## Pourquoi RoVibe
 
 - **Plusieurs agents, un seul jeu.** Chaque agent a son terminal dans le dossier du projet. RoVibe les empêche d'écraser les fichiers des autres et peut donner à chacun sa branche git.
+- **TypeScript d'abord.** Les nouveaux projets s'écrivent en TypeScript, compilé en Luau par [roblox-ts](https://roblox-ts.com). Chaque appel à l'API Roblox est vérifié avant que le code n'arrive dans Studio, et les agents ont les paquets npm et les erreurs de chaque fichier qu'ils écrivent. Le Luau pur reste à un clic.
 - **Studio dans la boucle.** Un fork de [Rojo](https://github.com/rojo-rbx/rojo) synchronise Studio avec les fichiers. Chaque agent reçoit un serveur MCP qui lit le jeu, exécute du Luau, joue le test et prend des captures. Un appel d'outil prend environ 1 ms.
 - **Tu gardes la main.** Chaque changement est listé avec l'agent qui l'a fait, et chaque projet est un dépôt git sur lequel on peut revenir en arrière. Publier, ou synchroniser un jeu en ligne, attend ton accord.
 - **Ton propre abonnement.** RoVibe ne contient aucun modèle. Chaque agent se connecte avec ton compte Claude ou ChatGPT, et tout tourne sur ton PC.
@@ -51,11 +52,12 @@ Ils écrivent du Luau dans de vrais fichiers, Studio le reflète en direct, et l
 ### Roblox Studio en direct
 | | |
 |---|---|
-| **RoVibe Sync** | Le code vit dans des fichiers, Studio reflète chaque enregistrement en 100 ms environ. Un nouveau projet part d'un modèle ou des scripts d'une place déjà ouverte dans Studio. |
+| **TypeScript → Luau** | Le compilateur roblox-ts tourne en surveillance à côté de la synchro : un `.ts` enregistré arrive dans Studio en Luau en une demi-seconde environ. L'en-tête indique si tout compile. Un fichier qui ne compile pas n'arrive jamais dans Studio, et l'agent qui l'a écrit apprend aussitôt pourquoi. Des fichiers `.luau` écrits à la main peuvent cohabiter avec le TypeScript. |
+| **RoVibe Sync** | Le code vit dans des fichiers, Studio reflète chaque enregistrement en 100 ms environ. Un nouveau projet part d'un modèle (TypeScript ou Luau) ou des scripts d'une place déjà ouverte dans Studio. |
 | **Pont Studio** | Le plugin garde un WebSocket ouvert vers l'app : un seul aller-retour local par appel d'outil, sans polling. Les outils se mettent à jour sans redémarrer Studio. |
 | **Jouer le test** | Les agents lancent un test Play, déplacent le personnage (pathfinding) et envoient de vraies touches, clics, molette et mouvements de caméra, y compris un clic sur un élément d'interface désigné par son chemin. Tout se passe en arrière-plan : ton clavier et ta souris restent à toi. |
 | **Captures** | L'app photographie la vue 3D de Studio, même derrière d'autres fenêtres, et peut d'abord cadrer une instance. |
-| **Vérification du code** | `check_code` lance selene et luau-lsp. À chaque fichier écrit par un agent Claude Code, les erreurs selene lui reviennent aussitôt. |
+| **Vérification du code** | `check_code` donne les erreurs du compilateur dans un projet TypeScript, et lance selene et luau-lsp dans un projet Luau. À chaque fichier écrit par un agent, ses erreurs lui reviennent aussitôt. |
 | **Publication** | Un bouton, ou l'outil `publish` après ton accord. RoVibe relit ensuite chez Roblox la date de mise à jour de la place pour confirmer la publication. |
 | **Studio bloqué** | Une boîte de dialogue ouverte dans Studio (« Auto Recovery » après un plantage, par exemple) est signalée, et aucun test ne démarre tant qu'elle est là. |
 
@@ -95,9 +97,10 @@ flowchart LR
   Server -->|ConPTY| A2["Codex"]
   A1 -->|MCP| Server
   A2 -->|MCP| Server
-  A1 -->|modifie| Files[("Fichiers du projet<br/>dépôt git")]
+  A1 -->|modifie| Files[("src/*.ts<br/>dépôt git")]
   A2 -->|modifie| Files
-  Files --> Sync["rovibe-sync<br/>(fork de Rojo)"]
+  Files --> TS["roblox-ts<br/>surveillance"]
+  TS -->|Luau dans out/| Sync["rovibe-sync<br/>(fork de Rojo)"]
   Sync -->|synchro en direct| Studio["Roblox Studio<br/>plugin RoVibeStudio"]
   Server <-->|pont WebSocket| Studio
 ```
@@ -113,8 +116,8 @@ flowchart LR
 ## Démarrage
 
 1. **Installe** RoVibe avec l'installeur de la [dernière version](https://github.com/aaldersondev/rovibe/releases/latest) (Windows 10/11, 64 bits). Il n'est pas encore signé : Windows affiche « Éditeur inconnu ». Ensuite, l'app se met à jour toute seule.
-2. **Premiers pas** s'ouvre au premier lancement et liste ce qui manque : Claude Code ou Codex, git, le plugin Studio. Installe le plugin depuis là, puis redémarre Roblox Studio.
-3. **Nouveau projet** : à partir d'un modèle, d'un dossier qui contient déjà un `default.project.json`, ou des scripts de la place ouverte dans Studio.
+2. **Premiers pas** s'ouvre au premier lancement et liste ce qui manque : Claude Code ou Codex, git, Node.js (pour le TypeScript), le plugin Studio. Installe le plugin depuis là, puis redémarre Roblox Studio.
+3. **Nouveau projet** : à partir du modèle TypeScript (par défaut) ou Luau, d'un dossier qui contient déjà un `default.project.json` (un projet roblox-ts existant marche tel quel), ou des scripts de la place ouverte dans Studio, qui restent en Luau.
 4. **Connecter** : ouvre la place dans Studio et clique sur « Connecter ».
 5. **Lance des agents** avec « Claude Code » ou « Codex », et donne-leur quelque chose à construire.
 
@@ -188,6 +191,7 @@ Un certificat s'achète auprès d'une autorité (Certum, Sectigo, DigiCert…) o
 | `%USERPROFILE%\.rovibe` | Réglages, jeton, projets enregistrés, journal (`rovibe.log`) |
 | `Documents\RoVibe` | Nouveaux projets et banque d'assets (`Banque`) |
 | `<projet>\.rovibe` | Consignes enregistrées du projet |
+| `<projet>\out`, `include` | Le Luau compilé d'un projet TypeScript (non versionné, refait à chaque enregistrement) |
 | Port 34880 | L'app ; la synchro de chaque projet utilise 34873 et au-delà |
 </details>
 

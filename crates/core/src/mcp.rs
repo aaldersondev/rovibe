@@ -116,7 +116,7 @@ fn tools() -> Value {
         },
         {
             "name": "check_code",
-            "description": "Vérifie le code du projet sans lancer le jeu : selene (noms indéfinis, erreurs de syntaxe, variables inutilisées) et luau-lsp (erreurs de type, avec l'API Roblox et l'arborescence du projet). À lancer après une série de modifications, avant un playtest.",
+            "description": "Vérifie le code du projet sans lancer le jeu. Projet TypeScript : erreurs de compilation roblox-ts (types de l'API Roblox, constructions refusées), plus selene sur le Luau écrit à la main. Projet Luau : selene (noms indéfinis, erreurs de syntaxe, variables inutilisées) et luau-lsp (erreurs de type, avec l'API Roblox et l'arborescence du projet). À lancer après une série de modifications, avant un playtest.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -400,6 +400,21 @@ fn studio_status(state: &Shared, project: Option<&Project>) -> String {
             if running { "active" } else { "arrêtée" },
             project.sync_port
         ));
+        if crate::typescript::is_project(&project.path) {
+            let line = match sync::compiler(state, &project.id).map(|compiler| compiler.status()) {
+                None => "\nTypeScript : compilateur arrêté (il tourne avec la synchro) ; `check_code` compile quand même".to_owned(),
+                Some(status) if status.compiling => "\nTypeScript : compilation en cours".to_owned(),
+                Some(status) => {
+                    let errors = status.findings.iter().filter(|finding| finding.error).count();
+                    if errors == 0 {
+                        "\nTypeScript : compilé sans erreur, `out/` est à jour dans Studio".to_owned()
+                    } else {
+                        format!("\nTypeScript : {errors} erreur(s) de compilation, les fichiers concernés n'arrivent pas dans Studio (`check_code` pour le détail)")
+                    }
+                }
+            };
+            text.push_str(&line);
+        }
     }
     text
 }

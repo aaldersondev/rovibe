@@ -7,7 +7,7 @@
 ### Vibe Code Together in Roblox Studio.
 
 Run Claude Code and Codex side by side on one Roblox game.<br>
-They write Luau in real files, Studio mirrors it live, and the agents can play the game to check their work.
+They write typed TypeScript, compiled to Luau as they save. Studio mirrors it live, and the agents can play the game to check their work.
 
 [![Latest release](https://img.shields.io/github/v/release/aaldersondev/rovibe?label=release&color=8B5CF6)](https://github.com/aaldersondev/rovibe/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/aaldersondev/rovibe/total?color=22D3EE)](https://github.com/aaldersondev/rovibe/releases)
@@ -30,6 +30,7 @@ They write Luau in real files, Studio mirrors it live, and the agents can play t
 ## Why RoVibe
 
 - **Several agents, one game.** Each agent gets its own terminal in the project folder. RoVibe stops them from overwriting each other's files, and can give each one its own git branch.
+- **TypeScript first.** New projects are written in TypeScript and compiled to Luau by [roblox-ts](https://roblox-ts.com). Every call to Roblox's API is type-checked before the code reaches Studio, and agents get npm packages and the errors of each file they write. Plain Luau is still one click away.
 - **Studio in the loop.** A fork of [Rojo](https://github.com/rojo-rbx/rojo) keeps Studio in sync with the files. Every agent gets an MCP server that reads the game, runs Luau, plays the test and takes screenshots. A tool call takes about 1 ms.
 - **You stay in charge.** Every change is listed with the agent that made it, and every project is a git repository you can roll back. Publishing, or syncing into a live game, waits for your approval.
 - **Your own subscription.** RoVibe includes no model. Each agent signs in with your Claude or ChatGPT account, and everything runs on your PC.
@@ -51,11 +52,12 @@ They write Luau in real files, Studio mirrors it live, and the agents can play t
 ### Roblox Studio, live
 | | |
 |---|---|
-| **RoVibe Sync** | Code lives in files, and Studio mirrors each save in about 100 ms. Start a new project from a template or from the scripts of a place already open in Studio. |
+| **TypeScript → Luau** | The roblox-ts compiler runs in watch mode next to the sync: a saved `.ts` file reaches Studio as Luau in about half a second. The header shows whether everything compiles. A file that doesn't compile never reaches Studio, and the agent that wrote it is told why at once. Hand-written `.luau` files can sit next to the TypeScript. |
+| **RoVibe Sync** | Code lives in files, and Studio mirrors each save in about 100 ms. Start a new project from a template (TypeScript or Luau) or from the scripts of a place already open in Studio. |
 | **Studio bridge** | The plugin keeps a WebSocket open to the app: one local round trip per tool call, with no polling. Tools update without restarting Studio. |
 | **Playtesting** | Agents start a Play test, walk the character with pathfinding, and send real keys, clicks, mouse wheel and camera moves, including clicks on an interface element named by its path. All of it happens in the background, so your keyboard and mouse stay yours. |
 | **Screenshots** | The app captures Studio's 3D view, even when Studio is behind other windows, and can frame an instance first. |
-| **Code checking** | `check_code` runs selene and luau-lsp. Each time a Claude Code agent writes a file, the selene errors go straight back to it. |
+| **Code checking** | `check_code` reports the compiler's errors in a TypeScript project, and runs selene and luau-lsp in a Luau one. Each time an agent writes a file, its errors go straight back to it. |
 | **Publishing** | One button, or the `publish` tool after your approval. RoVibe then reads the place's last update date from Roblox to confirm the publish went through. |
 | **Blocked Studio** | An open dialog in Studio (such as "Auto Recovery" after a crash) is reported, and no test starts while it's there. |
 
@@ -95,9 +97,10 @@ flowchart LR
   Server -->|ConPTY| A2["Codex"]
   A1 -->|MCP| Server
   A2 -->|MCP| Server
-  A1 -->|edit| Files[("Project files<br/>git repository")]
+  A1 -->|edit| Files[("src/*.ts<br/>git repository")]
   A2 -->|edit| Files
-  Files --> Sync["rovibe-sync<br/>(Rojo fork)"]
+  Files --> TS["roblox-ts<br/>watch mode"]
+  TS -->|Luau in out/| Sync["rovibe-sync<br/>(Rojo fork)"]
   Sync -->|live sync| Studio["Roblox Studio<br/>RoVibeStudio plugin"]
   Server <-->|WebSocket bridge| Studio
 ```
@@ -113,8 +116,8 @@ flowchart LR
 ## Quick start
 
 1. **Install** with the installer from the [latest release](https://github.com/aaldersondev/rovibe/releases/latest) (Windows 10/11, 64-bit). It isn't code-signed yet, so Windows shows "Unknown publisher". After that, the app updates itself.
-2. **Getting started** opens on first launch and lists what's missing: Claude Code or Codex, git, the Studio plugin. Install the plugin from there, then restart Roblox Studio.
-3. **New project**: start from a template, from a folder that already holds a `default.project.json`, or from the scripts of the place open in Studio.
+2. **Getting started** opens on first launch and lists what's missing: Claude Code or Codex, git, Node.js (for TypeScript), the Studio plugin. Install the plugin from there, then restart Roblox Studio.
+3. **New project**: start from the TypeScript template (the default) or the Luau one, from a folder that already holds a `default.project.json` (an existing roblox-ts project works as it is), or from the scripts of the place open in Studio, which stay in Luau.
 4. **Connect**: open the place in Studio and click Connect.
 5. **Start agents** with Claude Code or Codex, and give them something to build.
 
@@ -188,6 +191,7 @@ Certificates are sold by certificate authorities (Certum, Sectigo, DigiCert…) 
 | `%USERPROFILE%\.rovibe` | Settings, token, registered projects, journal (`rovibe.log`) |
 | `Documents\RoVibe` | New projects and the asset bank (`Banque`) |
 | `<project>\.rovibe` | Saved prompts of the project |
+| `<project>\out`, `include` | The compiled Luau of a TypeScript project (not versioned, rebuilt on every save) |
 | Port 34880 | The app; each project's sync uses 34873 and up |
 </details>
 

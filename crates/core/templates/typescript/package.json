@@ -1,0 +1,17 @@
+{
+  "name": "{{package}}",
+  "private": true,
+  "scripts": {
+    "build": "rbxtsc",
+    "watch": "rbxtsc -w"
+  },
+  "dependencies": {
+    "@rbxts/services": "^1.6.0"
+  },
+  "devDependencies": {
+    "@rbxts/compiler-types": "3.0.0-types.0",
+    "@rbxts/types": "^1.0.960",
+    "roblox-ts": "3.0.0",
+    "typescript": "5.5.3"
+  }
+}

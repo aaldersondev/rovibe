@@ -6,7 +6,7 @@ Jeu Roblox développé sur fichiers. Roblox Studio reflète ce dossier en direct
 
 - Le code vit dans `src/`. Modifie les fichiers ici, jamais les scripts dans Studio : la synchro les écraserait.
 {{layout}}
-- Suffixes : `.server.luau` (Script), `.client.luau` (LocalScript), `.luau` (ModuleScript). `init.*.luau` donne son type au dossier.
+{{code}}
 - Ce qui n'est pas du code (map, modèles, interfaces posées à la main) reste dans la place Studio. Pour le lire ou le modifier, passe par les outils MCP `rovibe`.
 - Plusieurs agents travaillent en parallèle sur ce dossier. Avant de commencer, appelle `agents_status` pour voir qui fait quoi, puis `claim_files` sur les fichiers ou dossiers de ta tâche. Si une modification est refusée parce qu'un autre agent tient le fichier, n'insiste pas : avance sur autre chose. Termine par `release_files`.
 - Le projet est un dépôt git. Fais un commit quand une tâche est finie et vérifiée ; ne réécris pas l'historique.
@@ -21,7 +21,7 @@ Jeu Roblox développé sur fichiers. Roblox Studio reflète ce dossier en direct
 - `playtest` : démarre ou arrête un test, et attend qu'il soit prêt.
 - `play_move` : fait marcher le personnage jusqu'à une position ou une instance pendant un test Play.
 - `play_input` : vraies touches et vrais clics dans le jeu (interfaces, outils, ProximityPrompt). Aussi : clic droit, molette, glisser, et `look` pour tourner la caméra. Se joue en arrière-plan, sans prendre le clavier ni la souris de l'utilisateur.
-- `check_code` : vérifie le code (selene + types Luau) sans lancer le jeu. Les erreurs d'un fichier que tu viens d'écrire te sont aussi renvoyées automatiquement.
+- `check_code` : vérifie le code sans lancer le jeu (compilation roblox-ts pour un projet TypeScript, selene et types Luau sinon). Les erreurs d'un fichier que tu viens d'écrire te sont aussi renvoyées automatiquement.
 - `screenshot` : capture la vue 3D de Studio pour voir le rendu réel.
 - `publish` : met la place en ligne, après accord de l'utilisateur dans l'app. Uniquement s'il te l'a demandé.
 - `asset_search`, `asset_insert` : cherche et insère des assets de la banque locale (`bank:<id>`) ou du Creator Store (gratuits). Les scripts d'un asset du Store arrivent désactivés.

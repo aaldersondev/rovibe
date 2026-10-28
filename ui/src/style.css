@@ -366,6 +366,12 @@ button.start::before {
   background: var(--coral);
 }
 
+/* Something is on its way (the TypeScript compiling): no motion, the
+   breathing cell stays the page's only one. */
+.dot.busy {
+  background: var(--honey);
+}
+
 .pill.alert {
   border-color: var(--coral);
   color: var(--coral);

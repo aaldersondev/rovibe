@@ -30,7 +30,9 @@ export async function openProject(page: Page, name = "Essai") {
   await page.goto("/");
   let state = await api<State>(page, "/api/state");
   if (!state.projects.some((project) => project.name === name)) {
-    await api(page, "/api/projects", "POST", { name, path: path.join(dataDir, "projets", name) });
+    // Luau: the scenarios are about the interface, not the TypeScript compiler,
+    // which has a scenario of its own.
+    await api(page, "/api/projects", "POST", { name, path: path.join(dataDir, "projets", name), language: "luau" });
     state = await api<State>(page, "/api/state");
   }
   // A fresh install greets with the checklist; the scenarios start past it.
