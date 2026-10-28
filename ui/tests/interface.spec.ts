@@ -240,8 +240,18 @@ test("a new project is written in TypeScript, and its header says whether it com
   await dialog.locator('input[name="path"]').fill(folder);
   await dialog.locator('button[type="submit"]').click();
   const pill = page.locator(".bar .pill", { hasText: "TypeScript" });
-  await expect(pill).toHaveText("TypeScript : compilé", { timeout: 180_000 });
+  await expect(dialog).toBeHidden({ timeout: 180_000 });
+  // Created with its packages, and compiled once.
   expect(fs.existsSync(path.join(folder, "out", "server", "main.server.luau"))).toBe(true);
+
+  // The compiler watches the folder alongside the sync, which needs the sync
+  // engine; the CI doesn't build it.
+  const state = await api<{ projects: { name: string; sync_running: boolean }[] }>(page, "/api/state");
+  if (!state.projects.find((project) => project.name === "Obby")?.sync_running) {
+    await expect(pill).toHaveText("TypeScript : compilateur arrêté");
+    test.skip(true, "moteur de synchro absent : pas de compilation en direct");
+  }
+  await expect(pill).toHaveText("TypeScript : compilé", { timeout: 60_000 });
 
   // A file that doesn't compile is named in the header, and leaves it once fixed.
   const lava = path.join(folder, "src", "server", "lava.server.ts");
