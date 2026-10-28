@@ -16,13 +16,13 @@ Jeu Roblox développé sur fichiers. Roblox Studio reflète ce dossier en direct
 - `agents_status`, `claim_files`, `release_files` : coordination avec les autres agents du projet.
 - `studio_status` : Studio connecté, contexte (edit/server/client), état de la synchro.
 - `run_luau` : exécute du Luau dans Studio et renvoie ses `print` et ses valeurs de retour. `context: "server"` ou `"client"` pendant un playtest.
-- `get_tree`, `search`, `get_instance` : lecture de l'arborescence de la place.
+- `get_tree`, `search`, `get_instance` : lecture de l'arborescence de la place. Quand plusieurs enfants portent le même nom, un chemin sans précision est refusé : `search` donne `Nom[n]` pour désigner le bon.
 - `selection` : ce que l'utilisateur a sélectionné dans Studio. Quand il dit « ça » ou « cette pièce » sans chemin, c'est là.
 - `get_console` : sortie de la console Studio ; ne te renvoie que les lignes que tu n'as pas encore lues (`recent` pour relire).
 - `playtest_check` : vérifie une fonctionnalité dans un test neuf, en un appel, avec un verdict PASS / FAIL / INCONCLUSIVE. À préférer aux étapes séparées.
 - `playtest` : démarre ou arrête un test à la main, et attend qu'il soit prêt.
 - `play_move` : fait marcher le personnage jusqu'à une position ou une instance pendant un test Play.
-- `play_input` : vraies touches et vrais clics dans le jeu (interfaces, outils, ProximityPrompt). Aussi : clic droit, molette, glisser, et `look` pour tourner la caméra. Se joue en arrière-plan, sans prendre le clavier ni la souris de l'utilisateur.
+- `play_input` : vraies touches, vrais clics et texte dans le jeu (interfaces, outils, ProximityPrompt), par les entrées du moteur Roblox. Aussi : clic droit, molette, glisser, et `look` pour tourner la caméra. Un clic `gui` sur un bouton échoue s'il ne l'a pas activé. Se joue en arrière-plan, sans prendre le clavier ni la souris de l'utilisateur.
 - `check_code` : vérifie le code sans lancer le jeu (compilation roblox-ts pour un projet TypeScript, selene et types Luau sinon). Les erreurs d'un fichier que tu viens d'écrire te sont aussi renvoyées automatiquement.
 - `screenshot` : capture la vue 3D de Studio pour voir le rendu réel ; `frame` vise une cible sous un angle donné, puis remet la caméra en place.
 - `capture_sequence` : rafale de captures en planche-contact horodatée, pour juger une animation, un effet ou une transition.

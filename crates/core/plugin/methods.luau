@@ -45,6 +45,18 @@ return function(env)
 	}
 
 
+	local function namedChildren(parent, name)
+		local found = {}
+		for _, child in parent:GetChildren() do
+			if child.Name == name then
+				table.insert(found, child)
+			end
+		end
+		return found
+	end
+
+	-- A path that names one instance only: `Name[n]` marks the n-th of
+	-- several siblings sharing a name, in the order Studio lists them.
 	local function getFullPath(instance)
 		if instance == game then
 			return "game"
@@ -53,8 +65,16 @@ return function(env)
 		local names = {}
 		local current = instance
 		while current and current ~= game do
-			table.insert(names, 1, current.Name)
-			current = current.Parent
+			local segment = current.Name
+			local parent = current.Parent
+			if parent then
+				local twins = namedChildren(parent, current.Name)
+				if #twins > 1 then
+					segment ..= "[" .. tostring(table.find(twins, current)) .. "]"
+				end
+			end
+			table.insert(names, 1, segment)
+			current = parent
 		end
 		return "game." .. table.concat(names, ".")
 	end
@@ -71,8 +91,34 @@ return function(env)
 		end
 
 		local current = game
-		for index, name in segments do
-			local child = current:FindFirstChild(name)
+		for index, segment in segments do
+			local name, nth = segment, nil
+			local base, number = string.match(segment, "^(.-)%[(%d+)%]$")
+			if base and current:FindFirstChild(segment) == nil then
+				name, nth = base, tonumber(number)
+			end
+
+			local twins = namedChildren(current, name)
+			local child
+			if nth then
+				child = twins[nth]
+				if child == nil then
+					return nil, string.format("%s n'a que %d enfant(s) nommé(s) '%s'", getFullPath(current), #twins, name)
+				end
+			elseif #twins > 1 then
+				-- Picking one silently is how a tool reads one tree and a test
+				-- walks to another: the order differs from one DataModel to
+				-- the next.
+				return nil, string.format(
+					"chemin ambigu : %d enfants de %s s'appellent '%s'. Désigne-en un avec %s[n] (voir `search`), ou renomme-les.",
+					#twins,
+					getFullPath(current),
+					name,
+					name
+				)
+			else
+				child = twins[1]
+			end
 			if child == nil and index == 1 then
 				local ok, service = pcall(game.GetService, game, name)
 				child = if ok then service else nil
@@ -458,6 +504,230 @@ return function(env)
 		return table.concat(lines, "\n")
 	end
 
+	-- Takes a picture of this DataModel's view with Roblox's own capture.
+	-- Returns a temporary content id, which only the edit DataModel is
+	-- allowed to turn into pixels (capture_read), even for a test client.
+	function methods.capture_start()
+		local id = nil
+		game:GetService("CaptureService"):CaptureScreenshot(function(contentId)
+			id = contentId
+		end)
+		local deadline = os.clock() + 5
+		while not id and os.clock() < deadline do
+			task.wait()
+		end
+		if not id then
+			error("Studio n'a rendu aucune capture en 5 s (vue 3D réduite ou masquée ?)", 0)
+		end
+		return id
+	end
+
+	-- The pixels of a capture, RGBA, zstd-compressed then base64-encoded:
+	-- a viewport is several megabytes raw and well under half that packed.
+	function methods.capture_read(params)
+		local image = game:GetService("AssetService"):CreateEditableImageAsync(Content.fromUri(params.id))
+		local size = image.Size
+		local pixels = image:ReadPixelsBuffer(Vector2.zero, size)
+		image:Destroy()
+		local packed = EncodingService:CompressBuffer(pixels, Enum.CompressionAlgorithm.Zstd, 3)
+		return {
+			width = size.X,
+			height = size.Y,
+			data = buffer.tostring(EncodingService:Base64Encode(packed)),
+		}
+	end
+
+	-- Key names agents use, mapped to Enum.KeyCode; any KeyCode name works too.
+	local KEY_ALIASES = {
+		Enter = "Return",
+		Ctrl = "LeftControl",
+		Control = "LeftControl",
+		Shift = "LeftShift",
+		Alt = "LeftAlt",
+		Esc = "Escape",
+		Backspace = "Backspace",
+		["0"] = "Zero", ["1"] = "One", ["2"] = "Two", ["3"] = "Three", ["4"] = "Four",
+		["5"] = "Five", ["6"] = "Six", ["7"] = "Seven", ["8"] = "Eight", ["9"] = "Nine",
+	}
+
+	local function keyCode(name)
+		local wanted = KEY_ALIASES[name] or (if #name == 1 then string.upper(name) else name)
+		local ok, code = pcall(function()
+			return (Enum.KeyCode :: any)[wanted]
+		end)
+		if not ok or code == nil then
+			error(string.format("Touche inconnue : %s (lettres, chiffres, Space, Enter, Shift, Ctrl, F1…, ou un nom de Enum.KeyCode)", tostring(name)), 0)
+		end
+		return code
+	end
+
+	local BUTTONS = {
+		left = Enum.UserInputType.MouseButton1,
+		right = Enum.UserInputType.MouseButton2,
+		middle = Enum.UserInputType.MouseButton3,
+	}
+
+	-- Whether VirtualInput exists here: Roblox added it in 2026.
+	function methods.vinput_available()
+		local ok, created = pcall(function()
+			return (game:GetService("UserInputService") :: any):CreateVirtualInput()
+		end)
+		return ok and created ~= nil
+	end
+
+	-- Plays input steps into the game through Roblox's VirtualInput: real
+	-- engine input, so the game sees it exactly as a player's, with neither
+	-- the window's focus nor the user's keyboard and mouse involved. Clicks
+	-- on an interface element report whether it really activated.
+	function methods.vinput(params)
+		local UserInputService = game:GetService("UserInputService")
+		local virtual = (UserInputService :: any):CreateVirtualInput()
+		local camera = workspace.CurrentCamera
+		local held = {}
+		local lines = {}
+
+		local function release()
+			for code in held do
+				pcall(virtual.SendKey, virtual, false, code, false)
+			end
+			table.clear(held)
+		end
+
+		local function point(value, what)
+			if type(value) ~= "table" or type(value[1]) ~= "number" or type(value[2]) ~= "number" then
+				error(what .. " attend [x, y]", 0)
+			end
+			return Vector2.new(value[1], value[2])
+		end
+
+		local function click(position, button)
+			virtual:SendMousePosition(position)
+			task.wait(0.03)
+			virtual:SendMouseButton(position, button, true, 1)
+			task.wait(0.05)
+			virtual:SendMouseButton(position, button, false, 1)
+		end
+
+		-- Moves the pointer from one point to another over `ms`, as a hand
+		-- would, so that drags register as drags.
+		local function glide(from, to, ms)
+			local steps = math.max(2, math.floor(ms / 16))
+			for index = 1, steps do
+				virtual:SendMousePosition(from:Lerp(to, index / steps))
+				task.wait(ms / 1000 / steps)
+			end
+		end
+
+		local ok, failure = pcall(function()
+			for index, step in params.steps do
+				local button = BUTTONS[step.button or "left"]
+				if not button then
+					error("`button` vaut left, right ou middle", 0)
+				end
+				local ms = math.clamp(step.duration or 400, 50, 5000)
+
+				if step.key ~= nil then
+					local names = if type(step.key) == "table" then step.key else { step.key }
+					local codes = {}
+					for _, name in names do
+						local code = keyCode(name)
+						table.insert(codes, code)
+						virtual:SendKey(true, code, false)
+						held[code] = true
+					end
+					task.wait(math.clamp(step.hold or 80, 0, 5000) / 1000)
+					for position = #codes, 1, -1 do
+						virtual:SendKey(false, codes[position], false)
+						held[codes[position]] = nil
+					end
+				elseif step.gui ~= nil then
+					local center = methods.gui_center({ path = step.gui, locked = true })
+					local target = resolvePath((string.gsub(step.gui, "Players%.LocalPlayer", "Players." .. game:GetService("Players").LocalPlayer.Name, 1)))
+					local activated = false
+					local connection = if target and target:IsA("GuiButton")
+						then (target :: any).Activated:Connect(function()
+							activated = true
+						end)
+						else nil
+					click(Vector2.new(center.x, center.y), button)
+					task.wait(0.15)
+					if target and target:IsA("TextBox") then
+						-- Focus lands a few frames after the click.
+						local deadline = os.clock() + 0.6
+						while not (target :: any):IsFocused() and os.clock() < deadline do
+							task.wait()
+						end
+						table.insert(lines, string.format("étape %d : %s %s", index, step.gui, if (target :: any):IsFocused() then "a le focus" else "n'a PAS pris le focus"))
+					end
+					if connection then
+						connection:Disconnect()
+						table.insert(lines, string.format("étape %d : %s %s", index, step.gui, if activated then "activé" else "PAS activé (recouvert, désactivé, ou le jeu bloque la souris)"))
+						if not activated and step.verify ~= false then
+							error(string.format("le clic sur %s ne l'a pas activé", step.gui), 0)
+						end
+					end
+				elseif step.click ~= nil then
+					click(point(step.click, "`click`"), button)
+				elseif step.move ~= nil then
+					virtual:SendMousePosition(point(step.move, "`move`"))
+				elseif step.drag ~= nil then
+					local from, to = point(step.drag.from, "`drag.from`"), point(step.drag.to, "`drag.to`")
+					virtual:SendMousePosition(from)
+					virtual:SendMouseButton(from, button, true, 1)
+					glide(from, to, ms)
+					virtual:SendMouseButton(to, button, false, 1)
+				elseif step.look ~= nil then
+					local delta = point(step.look, "`look`")
+					-- A locked mouse turns the camera by its movement alone.
+					-- MouseBehavior can read LockCenter while a Modal button
+					-- has freed the cursor: VirtualInput then refuses deltas.
+					local locked = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+						and pcall(virtual.SendMouseDelta, virtual, Vector2.zero)
+					if locked then
+						local steps = math.max(2, math.floor(ms / 16))
+						for _ = 1, steps do
+							virtual:SendMouseDelta(delta / steps)
+							task.wait(ms / 1000 / steps)
+						end
+					else
+						-- The default camera turns while the right button is held.
+						local center = camera.ViewportSize / 2
+						virtual:SendMousePosition(center)
+						virtual:SendMouseButton(center, Enum.UserInputType.MouseButton2, true, 1)
+						glide(center, center + delta, ms)
+						virtual:SendMouseButton(center + delta, Enum.UserInputType.MouseButton2, false, 1)
+					end
+				elseif step.scroll ~= nil then
+					local at = if step.at then point(step.at, "`at`") else camera.ViewportSize / 2
+					virtual:SendMousePosition(at)
+					virtual:SendPointerAction(at, { Wheel = math.clamp(step.scroll, -40, 40) })
+				elseif step.text ~= nil then
+					local deadline = os.clock() + 1
+					while not UserInputService:GetFocusedTextBox() and os.clock() < deadline do
+						task.wait()
+					end
+					local focused = UserInputService:GetFocusedTextBox()
+					if not focused then
+						error(string.format("étape %d : aucune zone de saisie n'a le focus ; clique-la d'abord avec `gui`", index), 0)
+					end
+					virtual:SendTextInput(tostring(step.text))
+					task.wait(0.05)
+					table.insert(lines, string.format("étape %d : %s contient « %s »", index, getFullPath(focused), focused.Text))
+				elseif step.wait ~= nil then
+					task.wait(math.clamp(step.wait, 0, 5000) / 1000)
+				else
+					error(string.format("étape %d : il faut `key`, `gui`, `click`, `move`, `drag`, `look`, `scroll`, `text` ou `wait`", index), 0)
+				end
+			end
+		end)
+		-- Whatever happened, no key stays down in the game.
+		release()
+		if not ok then
+			error(tostring(failure), 0)
+		end
+		return table.concat(lines, "\n")
+	end
+
 	function methods.viewport_info()
 		local size = workspace.CurrentCamera.ViewportSize
 		return { width = math.round(size.X), height = math.round(size.Y) }
@@ -492,7 +762,9 @@ return function(env)
 
 		-- With the mouse locked, as in first person, the game reports every
 		-- click at the centre of the screen wherever the cursor really is.
-		if game:GetService("UserInputService").MouseBehavior ~= Enum.MouseBehavior.Default then
+		-- VirtualInput clicks say afterwards whether the button activated,
+		-- which settles it better than refusing up front.
+		if not params.locked and game:GetService("UserInputService").MouseBehavior ~= Enum.MouseBehavior.Default then
 			error("Le jeu verrouille la souris (vue à la première personne ou visée) : un clic ne peut pas viser cet élément", 0)
 		end
 
@@ -914,6 +1186,20 @@ return function(env)
 			end
 		end
 
+		-- All anchored and nothing animated: a fixed prop, which holds by
+		-- being anchored and has nothing to link.
+		local allAnchored = true
+		for _, part in parts do
+			if not part.Anchored then
+				allAnchored = false
+				break
+			end
+		end
+		if allAnchored and #motors == 0 and not humanoid then
+			table.insert(lines, "✓ modèle fixe : toutes les pièces sont ancrées et aucun Motor6D. Rien à relier tant qu'il ne doit ni bouger ni être déplacé par la physique ; pour l'animer, désancre tout sauf la racine et soude le reste.")
+			loose = {}
+		end
+
 		local found = false
 		found = report(lines, "pièce(s) non reliée(s) à la racine", loose, "soude chaque pièce à la racine (WeldConstraint), puis remplace par un Motor6D la soudure des pièces qui doivent bouger") or found
 		found = report(lines, "joint(s) cassé(s)", broken, "supprime-les ou répare-les : un joint sans pièce ne tient rien") or found
@@ -932,26 +1218,55 @@ return function(env)
 		return table.concat(lines, "\n")
 	end
 
-	-- What sits under a model: how far it floats above, or sinks into, the
-	-- first thing below it.
-	local function grounding(instance, center, size)
+	-- The world-aligned box around parts, from each part's own corners.
+	-- Model:GetBoundingBox follows the PrimaryPart's orientation, which is
+	-- wrong as soon as that part is turned (a cylinder lies along X).
+	local function worldBox(parts)
+		local low, high = Vector3.one * math.huge, -Vector3.one * math.huge
+		local lowest = nil
+		for _, part in parts do
+			local cframe, half = part.CFrame, part.Size / 2
+			local reach = Vector3.new(
+				math.abs(cframe.RightVector.X) * half.X + math.abs(cframe.UpVector.X) * half.Y + math.abs(cframe.LookVector.X) * half.Z,
+				math.abs(cframe.RightVector.Y) * half.X + math.abs(cframe.UpVector.Y) * half.Y + math.abs(cframe.LookVector.Y) * half.Z,
+				math.abs(cframe.RightVector.Z) * half.X + math.abs(cframe.UpVector.Z) * half.Y + math.abs(cframe.LookVector.Z) * half.Z
+			)
+			local partLow = cframe.Position - reach
+			if not lowest or partLow.Y < lowest.low.Y then
+				lowest = { part = part, low = partLow, center = cframe.Position }
+			end
+			low = low:Min(partLow)
+			high = high:Max(cframe.Position + reach)
+		end
+		return (low + high) / 2, high - low, lowest
+	end
+
+	-- What sits under the lowest part of a model: how far it floats above,
+	-- or sinks into, the first thing below it.
+	local function grounding(instance, size, lowest)
+		if size.X * size.Z > 250000 then
+			return "(trop étendu pour parler d'appui : sol ou plateau)"
+		end
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
 		params.FilterDescendantsInstances = { instance }
-		local bottom = center.Y - size.Y / 2
-		local from = Vector3.new(center.X, center.Y + size.Y / 2 + 1, center.Z)
-		local hit = workspace:Raycast(from, Vector3.new(0, -(size.Y + 200), 0), params)
+		local bottom = lowest.low.Y
+		local from = Vector3.new(lowest.center.X, lowest.center.Y + 1, lowest.center.Z)
+		local hit = workspace:Raycast(from, Vector3.new(0, -(from.Y - bottom) - 200, 0), params)
 		if not hit then
 			return "⚠ rien en dessous sur 200 studs : il flotte dans le vide"
 		end
 		local gap = bottom - hit.Position.Y
 		local under = getFullPath(hit.Instance)
-		if gap > 0.1 then
+		-- Planted a little into terrain is how trees and rocks are meant to
+		-- sit; into a part, it shows.
+		local sinkTolerance = if hit.Instance:IsA("Terrain") then 1.5 else 0.2
+		if gap > 0.2 then
 			return string.format("⚠ flotte à %.2f studs au-dessus de %s", gap, under)
-		elseif gap < -0.1 then
+		elseif -gap > sinkTolerance then
 			return string.format("⚠ s'enfonce de %.2f studs dans %s", -gap, under)
 		end
-		return "✓ posé sur " .. under
+		return "✓ posé sur " .. under .. (if gap < -0.2 then string.format(" (enfoncé de %.2f studs)", -gap) else "")
 	end
 
 	-- Size, make-up and placement of models or parts, before building with
@@ -966,10 +1281,11 @@ return function(env)
 				continue
 			end
 			if instance:IsA("Model") then
-				local cframe, size = instance:GetBoundingBox()
+				local partList = {}
 				local parts, meshes, unanchored, joints, scripts = 0, 0, 0, 0, 0
 				for _, descendant in instance:GetDescendants() do
 					if descendant:IsA("BasePart") then
+						table.insert(partList, descendant)
 						parts += 1
 						if descendant:IsA("MeshPart") or descendant:IsA("UnionOperation") then
 							meshes += 1
@@ -983,36 +1299,39 @@ return function(env)
 						scripts += 1
 					end
 				end
-				table.insert(lines, string.format("%s [Model] %.1f × %.1f × %.1f studs, centre (%.1f, %.1f, %.1f)", getFullPath(instance), size.X, size.Y, size.Z, cframe.X, cframe.Y, cframe.Z))
-				table.insert(lines, string.format("  %d pièce(s) dont %d mesh/union, %d joint(s), %d non ancrée(s), %d script(s)", parts, meshes, joints, unanchored, scripts))
 				if parts == 0 then
-					table.insert(lines, "  ✗ aucune BasePart : rien à voir")
+					table.insert(lines, getFullPath(instance) .. " [Model] : ✗ aucune BasePart, rien à voir")
 					continue
 				end
+				local center, size, lowest = worldBox(partList)
+				table.insert(lines, string.format("%s [Model] %.1f × %.1f × %.1f studs, centre (%.1f, %.1f, %.1f)", getFullPath(instance), size.X, size.Y, size.Z, center.X, center.Y, center.Z))
+				table.insert(lines, string.format("  %d pièce(s) dont %d mesh/union, %d joint(s), %d non ancrée(s), %d script(s)", parts, meshes, joints, unanchored, scripts))
 				local primary = instance.PrimaryPart
 				if not primary then
 					table.insert(lines, "  ⚠ pas de PrimaryPart : PivotTo et les déplacements par script tournent autour d'un point arbitraire")
 				else
-					local upY = primary.CFrame.UpVector.Y
+					-- What turning or moving the model follows is its pivot,
+					-- not how its PrimaryPart happens to be oriented.
+					local upY = instance:GetPivot().UpVector.Y
 					if upY < -0.99 then
-						table.insert(lines, "  ⚠ PrimaryPart à l'envers (UpVector vers le bas)")
+						table.insert(lines, "  ⚠ pivot à l'envers : PivotTo retournera le modèle")
 					elseif upY < 0.99 then
-						table.insert(lines, "  ⚠ PrimaryPart penchée : tourner le modèle par son pivot le penchera aussi")
+						table.insert(lines, string.format("  ⚠ pivot penché de %.0f° : PivotTo vers une orientation droite penchera le modèle (règle PivotOffset)", math.deg(math.acos(math.clamp(upY, -1, 1)))))
 					else
-						table.insert(lines, "  ✓ PrimaryPart " .. primary.Name .. ", droite")
+						table.insert(lines, "  ✓ PrimaryPart " .. primary.Name .. ", pivot droit")
 					end
 				end
-				if unanchored > 0 and joints == 0 then
+				if unanchored > 0 and joints == 0 and parts > 1 then
 					table.insert(lines, string.format("  ⚠ %d pièce(s) non ancrée(s) sans aucun joint : elles tomberont séparément", unanchored))
 				end
 				if instance:IsDescendantOf(workspace) then
-					table.insert(lines, "  " .. grounding(instance, cframe.Position, size))
+					table.insert(lines, "  " .. grounding(instance, size, lowest))
 				end
 			elseif instance:IsA("BasePart") then
 				table.insert(lines, string.format("%s [%s] %.1f × %.1f × %.1f studs à (%.1f, %.1f, %.1f), %s", getFullPath(instance), instance.ClassName, instance.Size.X, instance.Size.Y, instance.Size.Z, instance.Position.X, instance.Position.Y, instance.Position.Z, if instance.Anchored then "ancrée" else "NON ANCRÉE"))
 				if instance:IsDescendantOf(workspace) then
-					local size = instance.CFrame:VectorToWorldSpace(instance.Size)
-					table.insert(lines, "  " .. grounding(instance, instance.Position, Vector3.new(math.abs(size.X), math.abs(size.Y), math.abs(size.Z))))
+					local _, size, lowest = worldBox({ instance })
+					table.insert(lines, "  " .. grounding(instance, size, lowest))
 				end
 			else
 				table.insert(lines, getFullPath(instance) .. " est un " .. instance.ClassName .. " : asset_check lit les Models et les BaseParts")

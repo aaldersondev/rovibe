@@ -1,6 +1,7 @@
-//! Captures Roblox Studio's window from the outside. The plugin can't do it:
-//! Studio's capture API only exists inside a running client and can't hand
-//! pixels to a plugin in the edit DataModel.
+//! Captures Roblox Studio's window from the outside. Screenshots go through
+//! Roblox's own capture first (CaptureService, whose pixels only the edit
+//! DataModel may read, even for a test client's picture); this is the
+//! fallback, and the faster way for bursts, about 4 frames a second.
 
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, RgbImage};
 
@@ -13,7 +14,16 @@ pub struct Capture {
     pub cropped: bool,
 }
 
-fn encode(rgb: RgbImage, cropped: bool, max_width: u32) -> Result<Capture, String> {
+/// An image from the RGBA pixels the plugin read out of a Roblox capture.
+pub fn from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<RgbImage, String> {
+    if rgba.len() != width as usize * height as usize * 4 {
+        return Err(format!("capture de {} octets pour {width}x{height} px", rgba.len()));
+    }
+    let rgb = rgba.chunks_exact(4).flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]).collect();
+    RgbImage::from_raw(width, height, rgb).ok_or_else(|| "Image de capture invalide".to_owned())
+}
+
+pub(crate) fn encode(rgb: RgbImage, cropped: bool, max_width: u32) -> Result<Capture, String> {
     let rgb = if rgb.width() > max_width {
         let height = (rgb.height() as u64 * max_width as u64 / rgb.width() as u64) as u32;
         image::imageops::resize(&rgb, max_width, height.max(1), FilterType::Triangle)
@@ -206,4 +216,27 @@ pub fn capture(_place_name: &str, _viewport: Option<(i32, i32)>, _max_width: u32
 #[cfg(not(windows))]
 pub fn capture_raw(_place_name: &str, _viewport: Option<(i32, i32)>) -> Result<(RgbImage, bool), String> {
     Err("La capture d'écran n'est disponible que sous Windows".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_roblox_capture_loses_its_alpha_and_must_have_the_right_size() {
+        let rgba = [10, 20, 30, 255, 40, 50, 60, 0];
+        let image = from_rgba(2, 1, &rgba).unwrap();
+        assert_eq!(image.get_pixel(1, 0).0, [40, 50, 60]);
+        assert!(from_rgba(3, 1, &rgba).is_err());
+    }
+
+    #[test]
+    fn a_capture_packed_by_the_plugin_comes_back_intact() {
+        // What the plugin sends: RGBA through zstd.
+        let rgba: Vec<u8> = (0..64 * 32 * 4).map(|index| (index % 251) as u8).collect();
+        let packed = zstd::encode_all(&rgba[..], 3).unwrap();
+        let image = from_rgba(64, 32, &zstd::decode_all(&packed[..]).unwrap()).unwrap();
+        assert_eq!(image.dimensions(), (64, 32));
+        assert_eq!(image.get_pixel(0, 0).0, [0, 1, 2]);
+    }
 }

@@ -80,7 +80,7 @@ pub fn shrink(frame: &RgbImage) -> RgbImage {
 
 /// The label of a frame: its number from 1 and its time since the first.
 pub fn label(index: usize, seconds: f64) -> String {
-    format!("#{} +{:.2}s", index + 1, seconds)
+    format!("{} +{:.2}s", index + 1, seconds)
 }
 
 /// Lays `frames` out left to right, then top to bottom, `PER_SHEET` to a
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn labels_count_from_one_with_the_time_since_the_first_frame() {
-        assert_eq!(label(0, 0.0), "#1 +0.00s");
-        assert_eq!(label(11, 2.756), "#12 +2.76s");
+        assert_eq!(label(0, 0.0), "1 +0.00s");
+        assert_eq!(label(11, 2.756), "12 +2.76s");
     }
 }

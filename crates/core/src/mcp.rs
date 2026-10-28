@@ -184,13 +184,13 @@ fn tools() -> Value {
         },
         {
             "name": "play_input",
-            "description": "Pendant un test Play, envoie des entrées clavier et souris au jeu : touches, clics dans le viewport, clics sur un élément d'interface. Tout se passe en arrière-plan : Studio ne vient pas au premier plan, et ni le clavier ni la souris de l'utilisateur ne sont utilisés.",
+            "description": "Pendant un test Play, envoie des entrées clavier et souris au jeu : touches, clics dans le viewport, clics sur un élément d'interface, texte. Passe par VirtualInput, les entrées du moteur Roblox : le jeu les reçoit comme celles d'un joueur, Studio n'a pas besoin d'être au premier plan, et ni le clavier ni la souris de l'utilisateur ne sont utilisés. Un clic `gui` sur un bouton vérifie qu'il s'est vraiment activé et échoue sinon (`verify: false` pour tester un bouton qui ne doit pas réagir). Un bouton d'interface en vue à la première personne doit avoir `Modal` pour libérer la souris, comme pour un joueur.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "steps": {
                         "type": "array",
-                        "description": "Étapes jouées dans l'ordre (30 au plus). Chaque étape a un seul de ces champs : `key`, `gui`, `click`, `move`, `drag`, `look`, `scroll` ou `wait`.",
+                        "description": "Étapes jouées dans l'ordre (30 au plus). Chaque étape a un seul de ces champs : `key`, `gui`, `click`, `move`, `drag`, `look`, `scroll`, `text` ou `wait`. Les touches tenues sont toujours relâchées, même en cas d'erreur.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -205,6 +205,8 @@ fn tools() -> Value {
                                 "scroll": { "type": "integer", "description": "Crans de molette, positif = vers l'avant (zoom avant). Au centre de l'écran, ou au point `at`." },
                                 "at": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] pour `scroll`." },
                                 "duration": { "type": "integer", "description": "Durée en ms de `drag` et `look`, défaut 400, maximum 5000." },
+                                "text": { "type": "string", "description": "Texte tapé dans la zone de saisie qui a le focus (clique-la d'abord avec `gui`)." },
+                                "verify": { "type": "boolean", "description": "Pour `gui` : false accepte qu'un bouton ne s'active pas." },
                                 "wait": { "type": "integer", "description": "Pause en ms, maximum 5000." }
                             }
                         }
@@ -1063,6 +1065,27 @@ fn frame_of(args: &Value) -> Option<Value> {
     }
 }
 
+/// The 3D view as Roblox itself renders it: the view's DataModel takes the
+/// picture, and the editor, the only one Roblox lets read a capture's
+/// pixels, hands them over. No window, focus or screen involved.
+async fn native_capture(state: &Shared, project: Option<&Project>) -> Result<image::RgbImage, String> {
+    let edit = studio::pick(state, project, "edit")?;
+    let viewer = viewer(state, project)?;
+    let id = viewer.call("capture_start", json!({}), Duration::from_secs(10)).await?;
+    let pixels = edit.call("capture_read", json!({ "id": id }), Duration::from_secs(20)).await?;
+    let width = pixels["width"].as_u64().unwrap_or(0) as u32;
+    let height = pixels["height"].as_u64().unwrap_or(0) as u32;
+    let packed = base64::engine::general_purpose::STANDARD
+        .decode(pixels["data"].as_str().unwrap_or_default())
+        .map_err(|error| format!("capture illisible : {error}"))?;
+    tokio::task::spawn_blocking(move || {
+        let rgba = zstd::decode_all(&packed[..]).map_err(|error| format!("capture illisible : {error}"))?;
+        screenshot::from_rgba(width, height, &rgba)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 async fn take_screenshot(state: &Shared, project: Option<&Project>, args: &Value) -> Result<Vec<Value>, String> {
     // Without a connected Studio there is no place name to match, and the
     // capture falls back to the only Studio window if there is just one.
@@ -1074,16 +1097,37 @@ async fn take_screenshot(state: &Shared, project: Option<&Project>, args: &Value
         None => None,
     };
 
-    let viewport = if args["area"] != "window" { viewport_of(&viewer).await } else { None };
-    let place = studio.map(|studio| studio.name.clone()).unwrap_or_default();
     let max_width = (args["max_width"].as_u64().unwrap_or(1280) as u32).clamp(320, 3840);
+    let mut fallback = None;
+    let native = if args["area"] != "window" {
+        match native_capture(state, project).await {
+            Ok(image) => Some(image),
+            Err(error) => {
+                fallback = Some(error);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
-    let capture = tokio::task::spawn_blocking(move || screenshot::capture(&place, viewport, max_width))
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|capture| capture);
+    let rendered = native.is_some();
+    let capture = match native {
+        Some(image) => screenshot::encode(image, true, max_width),
+        None => {
+            let viewport = if args["area"] != "window" { viewport_of(&viewer).await } else { None };
+            let place = studio.map(|studio| studio.name.clone()).unwrap_or_default();
+            tokio::task::spawn_blocking(move || screenshot::capture(&place, viewport, max_width))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|capture| capture)
+        }
+    };
 
     let mut note = String::new();
+    if let Some(error) = fallback {
+        crate::log::warn(format!("Capture Roblox impossible ({error}) : capture de la fenêtre à la place"));
+    }
     if let Some(framed) = framed {
         if !framed.held().await {
             note.push_str("\n⚠ Un script du jeu a repris la caméra avant la photo : l'image montre sa vue, pas le cadrage demandé.");
@@ -1094,9 +1138,10 @@ async fn take_screenshot(state: &Shared, project: Option<&Project>, args: &Value
     let capture = capture?;
 
     let what = if capture.cropped { "Vue 3D de Studio" } else { "Fenêtre Studio entière" };
+    let how = if rendered { ", rendue par Roblox" } else { "" };
     Ok(vec![
         json!({ "type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&capture.jpeg), "mimeType": "image/jpeg" }),
-        json!({ "type": "text", "text": format!("{what}, {}x{} px{note}", capture.width, capture.height) }),
+        json!({ "type": "text", "text": format!("{what}{how}, {}x{} px{note}", capture.width, capture.height) }),
     ])
 }
 
@@ -1194,7 +1239,7 @@ async fn capture_sequence(state: &Shared, project: Option<&Project>, args: &Valu
         frames
             .iter()
             .enumerate()
-            .map(|(index, (_, at))| format!("#{} {:.2}s", index + 1, at))
+            .map(|(index, (_, at))| format!("{}: {:.2}s", index + 1, at))
             .collect::<Vec<_>>()
             .join(", ")
     );
@@ -1513,7 +1558,9 @@ async fn run_check(state: &Shared, project: &Project, session: Option<&str>, fol
         }
 
         // The game's own errors, read once everything above had its chance
-        // to cause them.
+        // to cause them, and once the plugin's last batch of lines (sent
+        // every 100 ms) has arrived.
+        tokio::time::sleep(Duration::from_millis(400)).await;
         let mut contexts = vec!["server"];
         if play {
             contexts.push("client");
@@ -1616,6 +1663,39 @@ async fn play_input(state: &Shared, project: Option<&Project>, args: &Value) -> 
     let listed = args["steps"].as_array().ok_or("`steps` est requis")?;
     if listed.is_empty() || listed.len() > 30 {
         return Err("`steps` doit contenir entre 1 et 30 étapes".into());
+    }
+
+    // Roblox's VirtualInput when this Studio has it: engine input that the
+    // game can't tell from a player's, keyboard layout and window aside.
+    let native = client
+        .call("vinput_available", json!({}), Duration::from_secs(10))
+        .await
+        .is_ok_and(|available| available == true);
+    if native {
+        let budget: u64 = listed
+            .iter()
+            .map(|step| {
+                ["hold", "duration", "wait"]
+                    .iter()
+                    .filter_map(|key| step[*key].as_u64())
+                    .map(|ms| ms.min(5000))
+                    .sum::<u64>()
+                    + 500
+            })
+            .sum();
+        let observed = client
+            .call("vinput", json!({ "steps": listed }), Duration::from_millis(budget + 15_000))
+            .await?;
+        let observed = observed.as_str().unwrap_or_default();
+        return Ok(format!(
+            "{} étape(s) jouée(s) dans le jeu par VirtualInput (entrées du moteur Roblox, en arrière-plan).{}{}",
+            listed.len(),
+            if observed.is_empty() { "" } else { "\n" },
+            observed
+        ));
+    }
+    if listed.iter().any(|step| !step["text"].is_null()) {
+        return Err("`text` demande VirtualInput, que ce Studio n'a pas : mets Roblox Studio à jour".into());
     }
 
     let viewport = client
