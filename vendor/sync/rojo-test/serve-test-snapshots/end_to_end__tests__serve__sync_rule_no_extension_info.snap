@@ -4,6 +4,8 @@ expression: redactions.redacted_yaml(info)
 ---
 expectedPlaceIds: ~
 gameId: ~
+messageCursor: 0
+oldestMessageCursor: 0
 placeId: ~
 projectName: sync_rule_no_extension
 protocolVersion: 5

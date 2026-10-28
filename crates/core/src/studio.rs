@@ -33,6 +33,9 @@ pub struct Studio {
     pub place_id: u64,
     pub name: String,
     pub context: String,
+    /// The RoVibe project the place is stamped for (ServerStorage.RoVibe),
+    /// as the plugin said on connecting or the app stamped since.
+    marker: Mutex<Option<String>>,
     outgoing: mpsc::UnboundedSender<String>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Reply>>>,
     next_call: AtomicU64,
@@ -48,6 +51,14 @@ pub struct StudioInfo {
 }
 
 impl Studio {
+    pub fn marker(&self) -> Option<String> {
+        self.marker.lock().unwrap().clone()
+    }
+
+    pub fn set_marker(&self, project_id: Option<String>) {
+        *self.marker.lock().unwrap() = project_id;
+    }
+
     pub fn info(&self) -> StudioInfo {
         StudioInfo {
             id: self.id,
@@ -85,7 +96,17 @@ impl Studio {
 /// Picks the Studio connection a tool call should go to.
 pub fn pick(state: &Shared, project: Option<&Project>, context: &str) -> Result<Arc<Studio>, String> {
     let studios = state.studios.lock().unwrap();
-    let in_context = || studios.values().filter(|studio| studio.context == context);
+    let project_id = project.map(|project| project.id.as_str());
+    // A place stamped for another project is never this one's, whatever its
+    // id or name. (The client of a test sees no stamp: ServerStorage stays
+    // on the server.)
+    let foreign = |studio: &&Arc<Studio>| studio.marker().is_some_and(|marker| Some(marker.as_str()) != project_id);
+    let in_context = || {
+        studios
+            .values()
+            .filter(|studio| studio.context == context)
+            .filter(move |studio| !foreign(studio))
+    };
 
     // A published place is recognised by its id in every DataModel. A local
     // file only has its name, and only the editor reports it reliably.
@@ -108,12 +129,31 @@ pub fn pick(state: &Shared, project: Option<&Project>, context: &str) -> Result<
         (None, None) => in_context().collect(),
     };
 
+    // The binding the user chose comes first. When it finds no place (a file
+    // renamed, or a name the sync overwrote) or several, the stamp settles
+    // it: it survives a rename and exists for a place never published.
+    if candidates.len() != 1 {
+        if let Some(id) = project_id {
+            let stamped: Vec<&Arc<Studio>> = in_context().filter(|studio| studio.marker().as_deref() == Some(id)).collect();
+            if stamped.len() == 1 {
+                return Ok(stamped[0].clone());
+            }
+        }
+    }
+
     let bound_elsewhere = project.is_some_and(|project| project.is_bound())
         && candidates.is_empty()
         && in_context().next().is_some();
+    let only_foreign = candidates.is_empty()
+        && in_context().next().is_none()
+        && studios.values().any(|studio| studio.context == context && foreign(&studio));
 
     match candidates.len() {
         1 => Ok(candidates.remove(0).clone()),
+        0 if only_foreign => Err(
+            "La place ouverte dans Studio appartient à un autre projet RoVibe (marqueur ServerStorage.RoVibe) : ouvre la place de ce projet-ci."
+                .into(),
+        ),
         0 if studios.is_empty() => Err(
             "Aucun Roblox Studio connecté. Ouvre la place dans Studio avec le plugin RoVibe Studio installé."
                 .into(),
@@ -139,6 +179,9 @@ pub struct Hello {
     context: String,
     #[serde(default)]
     name: String,
+    /// The project the place is stamped for; empty when it isn't.
+    #[serde(default)]
+    project: String,
 }
 
 pub async fn ws_handler(
@@ -169,6 +212,7 @@ async fn serve(state: Shared, hello: Hello, socket: WebSocket) {
         } else {
             hello.context
         },
+        marker: Mutex::new(Some(hello.project).filter(|id| !id.is_empty())),
         outgoing,
         pending: Mutex::default(),
         next_call: AtomicU64::new(1),
@@ -311,6 +355,7 @@ mod tests {
                     place_id: *place_id,
                     name: (*name).into(),
                     context: (*context).into(),
+                    marker: Mutex::default(),
                     outgoing,
                     pending: Mutex::default(),
                     next_call: AtomicU64::new(1),
@@ -378,6 +423,28 @@ mod tests {
         let state = state_with(&[(0, "A.rbxl", "edit")]);
         let error = picked(&state, &project(None, Some("Closed.rbxl")), "edit").unwrap_err();
         assert!(error.contains("Closed.rbxl") && error.contains("liaison"), "{error}");
+    }
+
+    #[test]
+    fn a_stamped_place_wins_over_names_and_is_never_another_projects() {
+        let state = state_with(&[(0, "Copie.rbxl", "edit"), (0, "Autre.rbxl", "edit")]);
+        let studios: Vec<Arc<Studio>> = state.studios.lock().unwrap().values().cloned().collect();
+        for studio in &studios {
+            studio.set_marker(Some(if studio.name == "Copie.rbxl" { "p1" } else { "p2" }.into()));
+        }
+        // Bound by a name that matches neither: the stamp decides.
+        assert_eq!(picked(&state, &project(None, Some("Ancien nom.rbxl")), "edit").unwrap(), "Copie.rbxl");
+
+        // The place the user chose in the app comes first, stamp or not.
+        let state = state_with(&[(0, "Ancienne.rbxl", "edit"), (0, "Choisie.rbxl", "edit")]);
+        state.studios.lock().unwrap().values().filter(|studio| studio.name == "Ancienne.rbxl").for_each(|studio| studio.set_marker(Some("p1".into())));
+        assert_eq!(picked(&state, &project(None, Some("Choisie.rbxl")), "edit").unwrap(), "Choisie.rbxl");
+
+        // A lone Studio stamped for another project is refused, not guessed.
+        let state = state_with(&[(0, "Autre.rbxl", "edit")]);
+        state.studios.lock().unwrap().values().for_each(|studio| studio.set_marker(Some("p2".into())));
+        let error = picked(&state, &project(None, None), "edit").unwrap_err();
+        assert!(error.contains("autre projet"), "{error}");
     }
 
     #[test]

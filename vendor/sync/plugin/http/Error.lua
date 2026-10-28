@@ -13,6 +13,10 @@ Error.Kind = {
 	Timeout = {
 		message = "HTTP request timed out.",
 	},
+	Unauthorized = {
+		message = "This sync server is managed by RoVibe and refused the connection without its token.\n"
+			.. "Connect from the RoVibe app, which hands the token to Studio.",
+	},
 	Unknown = {
 		message = "Unknown HTTP error: {{message}}",
 	},
@@ -67,6 +71,10 @@ function Error.fromResponse(response)
 	local lower = (response.body or ""):lower()
 	if response.code == 408 or response.code == 504 or lower:find("timed? ?out") then
 		return Error.new(Error.Kind.Timeout)
+	end
+
+	if response.code == 401 then
+		return Error.new(Error.Kind.Unauthorized)
 	end
 
 	return Error.new(Error.Kind.Unknown, string.format("%s: %s", tostring(response.code), tostring(response.body)))

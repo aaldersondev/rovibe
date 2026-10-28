@@ -2,6 +2,19 @@ if not plugin then
 	return
 end
 
+local Bridge = require(script.Bridge)
+
+-- Studio loads every plugin into the server and client DataModels of each
+-- playtest too. Syncing is the editor's job, so there the plugin starts the
+-- bridge to the app, which agents need to act inside the running game, and
+-- nothing else: mounting Roact and the whole panel in every test DataModel
+-- costs seconds per playtest, enough on a busy machine to trip Studio's
+-- plugin watchdog.
+if game:GetService("RunService"):IsRunning() then
+	Bridge.start(plugin)
+	return
+end
+
 local Rojo = script:FindFirstAncestor("Rojo")
 local Packages = Rojo.Packages
 
@@ -11,10 +24,9 @@ local Roact = require(Packages.Roact)
 local Settings = require(script.Settings)
 local Config = require(script.Config)
 local App = require(script.App)
-local Bridge = require(script.Bridge)
 
--- Started before the UI so that a failure to mount the panel in one DataModel
--- doesn't also cut agents off from it.
+-- Started before the UI so that a failure to mount the panel doesn't also
+-- cut agents off from Studio.
 Bridge.start(plugin)
 
 Log.setLogLevelThunk(function()

@@ -581,10 +581,61 @@ fn studio_status(state: &Shared, project: Option<&Project>) -> String {
     text
 }
 
+/// Whether the editor receives the project's sync, in one line, when the
+/// sync runs and a Studio is there to ask.
+async fn sync_line(state: &Shared, project: Option<&Project>) -> Option<String> {
+    let project = project?;
+    let server = sync::status(state, &project.id).await.ok()?;
+    let edit = studio::pick(state, Some(project), "edit").ok()?;
+    let plugin = edit.call("sync_status", json!({}), Duration::from_secs(5)).await.ok()?;
+    if plugin["supported"] != true {
+        return Some("Studio : plugin trop ancien pour dire s'il reçoit la synchro".into());
+    }
+    let connected = plugin["connected"] == true
+        && plugin["port"].as_u64() == Some(project.sync_port as u64)
+        && plugin["sessionId"].as_str() == Some(server.session_id.as_str());
+    if !connected {
+        return Some("Studio n'est PAS connecté à la synchro de ce projet : les fichiers n'arrivent pas dans la place (`sync_connect`)".into());
+    }
+    let reached = plugin["messageCursor"].as_i64().unwrap_or(-1);
+    Some(if reached >= server.message_cursor as i64 {
+        format!("Studio reçoit la synchro et a tous ses changements (message {})", server.message_cursor)
+    } else {
+        format!("Studio reçoit la synchro, {reached} changement(s) appliqué(s) sur {}", server.message_cursor)
+    })
+}
+
 pub async fn connect_sync(state: &Shared, project: &Project) -> Result<String, String> {
     let port = sync::serve(state, project).await?;
     state.notify();
     let studio = studio::pick(state, Some(project), "edit")?;
+
+    // The sync server only lets in a Studio that brings its token, which a
+    // plugin from before tokens can't do.
+    let plugin = studio.call("sync_status", json!({}), Duration::from_secs(10)).await?;
+    if plugin["supported"] != true {
+        return Err("Le plugin RoVibe Studio installé est trop ancien pour cette version de l'app : mets-le à jour (bouton « Installer le plugin » de l'app), puis redémarre Roblox Studio.".into());
+    }
+
+    // The place is stamped for the project it receives, and one stamped for
+    // another project never gets this one's files.
+    let marker = studio.call("project_marker", json!({}), Duration::from_secs(10)).await?;
+    match marker["projectId"].as_str() {
+        Some(id) if id != project.id => {
+            let owner = state.project(id).map(|owner| format!("« {} »", owner.name)).unwrap_or_else(|| format!("n° {id}"));
+            return Err(format!(
+                "La place « {} » appartient au projet RoVibe {owner} : rien n'a été synchronisé. Ouvre la place de « {} », ou retire le marqueur ServerStorage.RoVibe de celle-ci si elle doit changer de projet.",
+                studio.name, project.name
+            ));
+        }
+        Some(_) => {}
+        None => {
+            studio
+                .call("project_marker", json!({ "set": project.id }), Duration::from_secs(10))
+                .await?;
+            studio.set_marker(Some(project.id.clone()));
+        }
+    }
 
     // Syncing writes into the place: from here on the project belongs to
     // this one, and a second Studio opened later can't be mistaken for it.
@@ -600,10 +651,11 @@ pub async fn connect_sync(state: &Shared, project: &Project) -> Result<String, S
         drop(projects);
         let _ = state.save_projects();
     }
+    let token = sync::endpoint(state, &project.id).map(|(_, token)| token);
     studio
         .call(
             "sync_connect",
-            json!({ "host": "localhost", "port": port }),
+            json!({ "host": "localhost", "port": port, "token": token }),
             Duration::from_secs(10),
         )
         .await?;
@@ -1392,8 +1444,56 @@ async fn build_freshness(state: &Shared, project: &Project, folder: &std::path::
             },
         }
     }
-    // Long enough for the sync to carry the last save into the place.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Long enough for the server's file watcher to see the last save.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    studio_caught_up(state, project, report).await;
+}
+
+/// Whether the Studio window is connected to this project's sync server and
+/// has applied everything the server has: the server's message cursor,
+/// compared with the one the plugin reached.
+async fn studio_caught_up(state: &Shared, project: &Project, report: &mut Report) {
+    let server = match sync::status(state, &project.id).await {
+        Ok(server) => server,
+        Err(error) => {
+            report.doubts.push(format!("état de la synchro illisible ({error})"));
+            return;
+        }
+    };
+    let Ok(edit) = studio::pick(state, Some(project), "edit") else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let plugin = edit.call("sync_status", json!({}), Duration::from_secs(5)).await.unwrap_or_default();
+        if plugin["supported"] != true {
+            report.doubts.push("le plugin Studio est trop ancien pour dire s'il a reçu la synchro (mets-le à jour)".into());
+            return;
+        }
+        let same_server = plugin["connected"] == true
+            && plugin["port"].as_u64() == Some(project.sync_port as u64)
+            && plugin["sessionId"].as_str() == Some(server.session_id.as_str());
+        if !same_server {
+            report.doubts.push("Studio n'est pas connecté à la synchro de ce projet : la place peut dater (`sync_connect`)".into());
+            return;
+        }
+        let reached = plugin["messageCursor"].as_i64().unwrap_or(-1);
+        if reached >= server.message_cursor as i64 {
+            report.sections.push(format!(
+                "Synchro : Studio a reçu tous les changements du serveur (message {}, {} Studio connecté(s)).",
+                server.message_cursor, server.socket_clients
+            ));
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            report.doubts.push(format!(
+                "Studio n'avait reçu que {reached} des {} changements de la synchro après 5 s",
+                server.message_cursor
+            ));
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Runs one step's Luau and records it; `strict` also fails a step that
@@ -1785,7 +1885,14 @@ async fn call_tool(
     args: &Value,
 ) -> Result<String, String> {
     match name {
-        "studio_status" => Ok(studio_status(state, project)),
+        "studio_status" => {
+            let mut text = studio_status(state, project);
+            if let Some(line) = sync_line(state, project).await {
+                text.push('\n');
+                text.push_str(&line);
+            }
+            Ok(text)
+        }
         "run_luau" => run_luau(state, project, args).await,
         "get_tree" | "search" | "get_instance" | "rig_check" | "asset_check" => forward(state, project, name, args).await,
         "selection" => {

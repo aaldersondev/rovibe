@@ -55,8 +55,8 @@ They write typed TypeScript, compiled to Luau as they save. Studio mirrors it li
 | | |
 |---|---|
 | **TypeScript → Luau** | The roblox-ts compiler runs in watch mode next to the sync: a saved `.ts` file reaches Studio as Luau in about half a second. The header shows whether everything compiles. A file that doesn't compile never reaches Studio, and the agent that wrote it is told why at once. Hand-written `.luau` files can sit next to the TypeScript. |
-| **RoVibe Sync** | Code lives in files, and Studio mirrors each save in about 100 ms. Start a new project from a template (TypeScript or Luau) or from the scripts of a place already open in Studio. |
-| **Studio bridge** | The plugin keeps a WebSocket open to the app: one local round trip per tool call, with no polling. Tools update without restarting Studio. |
+| **RoVibe Sync** | Code lives in files, and Studio mirrors each save in about 100 ms. Start a new project from a template (TypeScript or Luau) or from the scripts of a place already open in Studio. A place is stamped with the project it belongs to and never takes another project's files, even renamed or never published. When the connection drops, as it does while a playtest starts, the sync picks up where it left off instead of reloading the whole place. |
+| **Studio bridge** | The plugin keeps a WebSocket open to the app: one local round trip per tool call, with no polling. Tools update without restarting Studio. In a playtest's DataModels the plugin starts only this bridge, so tests start as fast as without it. |
 | **Playtesting** | Agents start a Play test, walk the character with pathfinding, and send keys, clicks, text, mouse wheel and camera moves through Roblox's own VirtualInput: the game gets them exactly as a player's. A click on an interface element named by its path is checked to have really activated it. All of it happens in the background, so your keyboard and mouse stay yours. |
 | **Check in one call** | `playtest_check` waits for the code to be compiled and in Studio, starts a fresh test, sets the scene up, walks, asserts, reads the server and client consoles, takes a screenshot and stops the test, even when something fails. Verdict PASS, FAIL (cause named) or INCONCLUSIVE (code not guaranteed up to date). Scenarios are saved in `.rovibe/tests/` to be replayed. |
 | **Screenshots** | Roblox renders the picture itself (CaptureService), in the editor or in the test client, with no window or focus involved; the window capture remains as a fallback. `frame` points the camera from the angle asked for (azimuth, elevation, distance, field of view), then puts it back exactly where it was. `capture_sequence` takes a burst and returns a time-stamped contact sheet: animations, effects, transitions. |
@@ -76,7 +76,7 @@ Save models from Studio, each with a preview taken when it's saved, sorted into 
 | **Changes** | Everything agents changed since your last review, committed or not, with the agent responsible and the diff. Undo any file on its own. |
 | **History** | Every project is a git repository. A checkpoint is created before any "No confirmations" session, and History goes back to an earlier state without losing anything. |
 | **Protected project** | For a live game: Studio shows each change before applying it, and an agent needs your approval to connect the sync, just as it does to publish. |
-| **Local only** | Everything listens on `127.0.0.1`. The API and the MCP server need a token, and the plugin's endpoint refuses browsers. |
+| **Local only** | Everything listens on `127.0.0.1`. The API, the MCP server and each project's sync server need a token, and the plugin's endpoint refuses browsers. |
 
 ### MCP tools
 Every agent session gets the `rovibe` MCP server automatically.

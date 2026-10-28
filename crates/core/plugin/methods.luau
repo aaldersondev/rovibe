@@ -1519,8 +1519,47 @@ return function(env)
 		if not syncController then
 			error("Sync is only available in the edit DataModel", 0)
 		end
-		syncController.connect(params.host or "localhost", tostring(params.port))
+		-- An older plugin's connect takes no token and ignores it.
+		syncController.connect(params.host or "localhost", tostring(params.port), params.token)
 		return "connecting"
+	end
+
+	-- Where this window's sync stands: connected, to which port, and up to
+	-- which message of the server. `supported` is false for a plugin that
+	-- predates the report.
+	function methods.sync_status()
+		local syncController = env.getSyncController()
+		if not syncController or not syncController.status then
+			return { supported = false }
+		end
+		local status = syncController.status()
+		status.supported = true
+		return status
+	end
+
+	-- The RoVibe project the place is stamped for: `ServerStorage.RoVibe`,
+	-- attribute `ProjectId`. With `set`, stamps it; with `set` and an empty
+	-- string, removes the stamp.
+	function methods.project_marker(params)
+		local ServerStorage = game:GetService("ServerStorage")
+		local marker = ServerStorage:FindFirstChild("RoVibe")
+		if params.set ~= nil then
+			if params.set == "" then
+				if marker then
+					marker:SetAttribute("ProjectId", nil)
+				end
+			else
+				if not marker then
+					marker = Instance.new("Configuration")
+					marker.Name = "RoVibe"
+					marker.Parent = ServerStorage
+				end
+				marker:SetAttribute("ProjectId", params.set)
+			end
+		end
+		marker = ServerStorage:FindFirstChild("RoVibe")
+		local id = marker and marker:GetAttribute("ProjectId")
+		return { projectId = if type(id) == "string" and id ~= "" then id else nil }
 	end
 
 	function methods.sync_disconnect()

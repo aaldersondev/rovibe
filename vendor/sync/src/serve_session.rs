@@ -85,6 +85,21 @@ pub struct ServeSession {
     /// A channel to send mutation requests on. These will be handled by the
     /// ChangeProcessor and trigger changes in the tree.
     tree_mutation_sender: Sender<PatchSet>,
+
+    /// RoVibe: WebSocket subscriptions open right now, which is how the app
+    /// knows whether a Studio actually receives this server's changes.
+    socket_clients: std::sync::atomic::AtomicU32,
+}
+
+/// Keeps a WebSocket subscription counted until dropped.
+pub struct SocketClientGuard(Arc<ServeSession>);
+
+impl Drop for SocketClientGuard {
+    fn drop(&mut self) {
+        self.0
+            .socket_clients
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl ServeSession {
@@ -145,7 +160,18 @@ impl ServeSession {
             message_queue,
             tree_mutation_sender,
             vfs,
+            socket_clients: std::sync::atomic::AtomicU32::new(0),
         })
+    }
+
+    /// Counts a WebSocket subscription for as long as the returned guard lives.
+    pub fn track_socket_client(self: &Arc<Self>) -> SocketClientGuard {
+        self.socket_clients.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        SocketClientGuard(Arc::clone(self))
+    }
+
+    pub fn socket_clients(&self) -> u32 {
+        self.socket_clients.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn tree_handle(&self) -> Arc<Mutex<RojoTree>> {

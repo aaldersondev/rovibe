@@ -5,6 +5,7 @@ local Log = require(Packages.Log)
 local Promise = require(Packages.Promise)
 
 local Config = require(script.Parent.Config)
+local PlaceMarker = require(script.Parent.PlaceMarker)
 local Types = require(script.Parent.Types)
 local Version = require(script.Parent.Version)
 
@@ -90,14 +91,34 @@ local function rejectWrongPlaceId(infoResponseBody)
 	return Promise.resolve(infoResponseBody)
 end
 
+-- RoVibe: a place stamped for one project never takes another project's files.
+local function rejectWrongProject(infoResponseBody)
+	local served = infoResponseBody.rovibeProjectId
+	local stamped = PlaceMarker.get()
+	if served ~= nil and stamped ~= nil and served ~= stamped then
+		return Promise.reject(
+			string.format(
+				"This sync server is for another RoVibe project (%s) than the one this place belongs to (%s).\n"
+					.. "Nothing was synced. Open this project's own place, or change the place in the RoVibe app.",
+				tostring(served),
+				tostring(stamped)
+			)
+		)
+	end
+	return Promise.resolve(infoResponseBody)
+end
+
 local ApiContext = {}
 ApiContext.__index = ApiContext
 
-function ApiContext.new(baseUrl)
+-- `token` is the one the RoVibe app gave its sync server, sent on every
+-- request and on the WebSocket upgrade; nil for a server that asks for none.
+function ApiContext.new(baseUrl, token)
 	assert(type(baseUrl) == "string", "baseUrl must be a string")
 
 	local self = {
 		__baseUrl = baseUrl,
+		__headers = if token ~= nil and token ~= "" then { ["X-RoVibe-Token"] = token } else nil,
 		__sessionId = nil,
 		__messageCursor = -1,
 		__wsClient = nil,
@@ -140,10 +161,47 @@ function ApiContext:setMessageCursor(index)
 	self.__messageCursor = index
 end
 
+function ApiContext:getMessageCursor()
+	return self.__messageCursor
+end
+
+function ApiContext:getSessionId()
+	return self.__sessionId
+end
+
+--[[
+	Whether a dropped message stream can simply be reopened: the server is
+	still the same session, and still has every message after our cursor.
+	The socket drops while a playtest starts (Studio's HTTP stack is busy),
+	under a server that never went away; resyncing the whole tree each time,
+	inside the editor while the game runs, only adds to the load.
+]]
+function ApiContext:canResumeStream()
+	local priorSessionId = self.__sessionId
+	if priorSessionId == nil or self.__messageCursor < 0 then
+		return Promise.resolve(false)
+	end
+
+	local url = ("%s/api/rojo"):format(self.__baseUrl)
+	return Http.get(url, self.__headers)
+		:andThen(rejectFailedRequests)
+		:andThen(Http.Response.msgpack)
+		:andThen(function(body)
+			return body.sessionId == priorSessionId
+				and type(body.oldestMessageCursor) == "number"
+				and type(body.messageCursor) == "number"
+				and self.__messageCursor >= body.oldestMessageCursor
+				and self.__messageCursor <= body.messageCursor
+		end)
+		:catch(function()
+			return false
+		end)
+end
+
 function ApiContext:connect()
 	local url = ("%s/api/rojo"):format(self.__baseUrl)
 
-	return Http.get(url)
+	return Http.get(url, self.__headers)
 		:andThen(rejectFailedRequests)
 		:andThen(Http.Response.msgpack)
 		:andThen(rejectWrongProtocolVersion)
@@ -153,6 +211,7 @@ function ApiContext:connect()
 			return body
 		end)
 		:andThen(rejectWrongPlaceId)
+		:andThen(rejectWrongProject)
 		:andThen(function(body)
 			self.__sessionId = body.sessionId
 
@@ -163,7 +222,7 @@ end
 function ApiContext:read(ids)
 	local url = ("%s/api/read/%s"):format(self.__baseUrl, table.concat(ids, ","))
 
-	return Http.get(url):andThen(rejectFailedRequests):andThen(Http.Response.msgpack):andThen(function(body)
+	return Http.get(url, self.__headers):andThen(rejectFailedRequests):andThen(Http.Response.msgpack):andThen(function(body)
 		if body.sessionId ~= self.__sessionId then
 			return Promise.reject("Server changed ID")
 		end
@@ -208,7 +267,7 @@ function ApiContext:write(patch)
 
 	body = Http.msgpackEncode(body)
 
-	return Http.post(url, body)
+	return Http.post(url, body, self.__headers)
 		:andThen(rejectFailedRequests)
 		:andThen(Http.Response.msgpack)
 		:andThen(function(responseBody)
@@ -224,9 +283,19 @@ function ApiContext:connectWebSocket(packetHandlers)
 	url = url:gsub("^http://", "ws://"):gsub("^https://", "wss://")
 
 	return Promise.new(function(resolve, reject)
+		-- A resumed stream replaces one that errored: its handle lives on
+		-- until closed, and a playtest can drop the socket many times.
+		if self.__wsClient then
+			pcall(self.__wsClient.Close, self.__wsClient)
+			self.__wsClient = nil
+		end
+
 		local success, wsClient =
 			pcall(HttpService.CreateWebStreamClient, HttpService, Enum.WebStreamClientType.WebSocket, {
 				Url = url,
+				-- Studio sends these on the upgrade request, so the token
+				-- never travels in the URL.
+				Headers = self.__headers,
 			})
 		if not success then
 			reject("Failed to create WebSocket client: " .. tostring(wsClient))
@@ -275,7 +344,14 @@ function ApiContext:connectWebSocket(packetHandlers)
 			errored:Disconnect()
 			received:Disconnect()
 
-			reject("WebSocket error: " .. code .. " - " .. msg)
+			-- A dropped socket is ordinary (ServeSession resumes it): the raw
+			-- engine error is kept for debugging only.
+			Log.debug("WebSocket error: {} - {}", code, tostring(msg))
+			if tonumber(code) == 401 or string.find(tostring(msg), "%f[%d]401%f[%D]") then
+				reject(tostring(Http.Error.new(Http.Error.Kind.Unauthorized)))
+			else
+				reject("WebSocket error: " .. tostring(code) .. " - " .. tostring(msg))
+			end
 		end)
 	end)
 end
@@ -283,7 +359,7 @@ end
 function ApiContext:open(id)
 	local url = ("%s/api/open/%s"):format(self.__baseUrl, id)
 
-	return Http.post(url, ""):andThen(rejectFailedRequests):andThen(Http.Response.msgpack):andThen(function(body)
+	return Http.post(url, "", self.__headers):andThen(rejectFailedRequests):andThen(Http.Response.msgpack):andThen(function(body)
 		if body.sessionId ~= self.__sessionId then
 			return Promise.reject("Server changed ID")
 		end
@@ -296,7 +372,7 @@ function ApiContext:serialize(ids: { string })
 	local url = ("%s/api/serialize"):format(self.__baseUrl)
 	local request_body = Http.msgpackEncode({ sessionId = self.__sessionId, ids = ids })
 
-	return Http.post(url, request_body)
+	return Http.post(url, request_body, self.__headers)
 		:andThen(rejectFailedRequests)
 		:andThen(Http.Response.msgpack)
 		:andThen(function(response_body)
@@ -314,7 +390,7 @@ function ApiContext:refPatch(ids: { string })
 	local url = ("%s/api/ref-patch"):format(self.__baseUrl)
 	local request_body = Http.msgpackEncode({ sessionId = self.__sessionId, ids = ids })
 
-	return Http.post(url, request_body)
+	return Http.post(url, request_body, self.__headers)
 		:andThen(rejectFailedRequests)
 		:andThen(Http.Response.msgpack)
 		:andThen(function(response_body)

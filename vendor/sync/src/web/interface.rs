@@ -165,6 +165,29 @@ pub struct ServerInfoResponse {
     pub game_id: Option<u64>,
     pub place_id: Option<u64>,
     pub root_instance_id: Ref,
+    /// RoVibe: the newest message cursor, and the oldest one the server still
+    /// has the messages after. A client whose stream dropped resumes it only
+    /// when its own cursor lies in between; otherwise it syncs again.
+    #[serde(default)]
+    pub message_cursor: u32,
+    #[serde(default)]
+    pub oldest_message_cursor: u32,
+    /// RoVibe: the project the app started this server for, which a place
+    /// stamped with another project's id must refuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rovibe_project_id: Option<String>,
+}
+
+/// RoVibe: `/api/rovibe/status`, in JSON for the app.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoVibeStatusResponse {
+    pub session_id: SessionId,
+    pub message_cursor: u32,
+    pub oldest_message_cursor: u32,
+    /// Studios streaming changes from this server right now.
+    pub socket_clients: u32,
+    pub rovibe_project_id: Option<String>,
 }
 
 /// Response body from /api/read/{id}
@@ -297,6 +320,20 @@ impl ErrorResponse {
         }
     }
 
+    pub fn gone<S: Into<String>>(details: S) -> Self {
+        Self {
+            kind: ErrorResponseKind::Gone,
+            details: details.into(),
+        }
+    }
+
+    pub fn unauthorized<S: Into<String>>(details: S) -> Self {
+        Self {
+            kind: ErrorResponseKind::Unauthorized,
+            details: details.into(),
+        }
+    }
+
     pub fn internal_error<S: Into<String>>(details: S) -> Self {
         Self {
             kind: ErrorResponseKind::InternalError,
@@ -311,4 +348,6 @@ pub enum ErrorResponseKind {
     BadRequest,
     Forbidden,
     InternalError,
+    Gone,
+    Unauthorized,
 }

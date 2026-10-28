@@ -28,7 +28,56 @@ pub struct SyncProc {
     /// For a TypeScript project, the compiler that writes the `out/` this
     /// server carries to Studio.
     pub compiler: Option<Arc<crate::typescript::Watch>>,
+    /// Required by the server on every request: only the Studio the app
+    /// hands it to (with `sync_connect`) can read the project or write to it.
+    pub token: String,
     stop: Arc<Notify>,
+}
+
+/// What the sync server says about itself (`/api/rovibe/status`).
+pub struct ServerStatus {
+    pub session_id: String,
+    pub message_cursor: u64,
+    /// Studios streaming its changes right now.
+    pub socket_clients: u64,
+}
+
+/// Asks a project's running sync server where it stands.
+pub async fn status(state: &Shared, project_id: &str) -> Result<ServerStatus, String> {
+    let (port, token) = state
+        .syncs
+        .lock()
+        .unwrap()
+        .get(project_id)
+        .map(|running| (running.port, running.token.clone()))
+        .ok_or("la synchro ne tourne pas")?;
+    let reply: serde_json::Value = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/api/rovibe/status"))
+        .header("X-RoVibe-Token", token)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|error| format!("serveur de synchro injoignable : {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("serveur de synchro : {error}"))?
+        .json()
+        .await
+        .map_err(|_| "ce serveur de synchro ne sait pas dire où il en est (rovibe-sync trop ancien)".to_owned())?;
+    Ok(ServerStatus {
+        session_id: reply["sessionId"].as_str().unwrap_or_default().to_owned(),
+        message_cursor: reply["messageCursor"].as_u64().unwrap_or(0),
+        socket_clients: reply["socketClients"].as_u64().unwrap_or(0),
+    })
+}
+
+/// The address and token of a project's running sync server.
+pub fn endpoint(state: &Shared, project_id: &str) -> Option<(u16, String)> {
+    state
+        .syncs
+        .lock()
+        .unwrap()
+        .get(project_id)
+        .map(|running| (running.port, running.token.clone()))
 }
 
 impl SyncProc {
@@ -142,12 +191,17 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
         None
     };
 
+    let token = uuid::Uuid::new_v4().simple().to_string();
     let mut command = Command::new(binary);
     command
         .arg("serve")
         .arg(project.path.join("default.project.json"))
         .args(["--address", "127.0.0.1", "--port"])
         .arg(project.sync_port.to_string())
+        // Read by the fork: the token it requires, and the project a place
+        // stamped for another one must refuse.
+        .env("ROVIBE_SYNC_TOKEN", &token)
+        .env("ROVIBE_PROJECT_ID", &project.id)
         .current_dir(&project.path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -185,6 +239,7 @@ pub fn start(state: &Shared, project: &Project) -> Result<u16, String> {
             source: project.path.clone(),
             log,
             compiler: compiler.clone(),
+            token,
             stop: stop.clone(),
         },
     );

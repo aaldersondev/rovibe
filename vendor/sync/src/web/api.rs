@@ -18,16 +18,24 @@ use crate::{
     web::{
         interface::{
             ErrorResponse, Instance, MessagesPacket, OpenResponse, ReadResponse,
-            ServerInfoResponse, SocketPacket, SocketPacketBody, SocketPacketType, SubscribeMessage,
-            WriteRequest, WriteResponse, PROTOCOL_VERSION, SERVER_VERSION,
+            RoVibeStatusResponse, ServerInfoResponse, SocketPacket, SocketPacketBody,
+            SocketPacketType, SubscribeMessage, WriteRequest, WriteResponse, PROTOCOL_VERSION,
+            SERVER_VERSION,
         },
         origin::canonical,
-        util::{deserialize_msgpack, msgpack, msgpack_ok, serialize_msgpack},
+        util::{deserialize_msgpack, msgpack, msgpack_ok, response, serialize_msgpack},
     },
     web_api::{
         InstanceUpdate, RefPatchRequest, RefPatchResponse, SerializeRequest, SerializeResponse,
     },
 };
+
+/// RoVibe: the project the app started this server for (`ROVIBE_PROJECT_ID`).
+fn rovibe_project_id() -> Option<String> {
+    std::env::var("ROVIBE_PROJECT_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+}
 
 pub async fn call(
     serve_session: Arc<ServeSession>,
@@ -38,6 +46,7 @@ pub async fn call(
 
     match (request.method(), request.uri().path()) {
         (&Method::GET, "/api/rojo") => service.handle_api_rojo().await,
+        (&Method::GET, "/api/rovibe/status") => service.handle_api_rovibe_status().await,
         (&Method::GET, path) if path.starts_with("/api/read/") => {
             service.handle_api_read(request).await
         }
@@ -86,6 +95,7 @@ impl ApiService {
         let tree = self.serve_session.tree();
         let root_instance_id = tree.get_root_id();
 
+        let message_queue = self.serve_session.message_queue();
         msgpack_ok(&ServerInfoResponse {
             server_version: SERVER_VERSION.to_owned(),
             protocol_version: PROTOCOL_VERSION,
@@ -96,7 +106,27 @@ impl ApiService {
             place_id: self.serve_session.place_id(),
             game_id: self.serve_session.game_id(),
             root_instance_id,
+            message_cursor: message_queue.cursor(),
+            oldest_message_cursor: message_queue.oldest_cursor(),
+            rovibe_project_id: rovibe_project_id(),
         })
+    }
+
+    /// RoVibe: where the server's changes stand and whether a Studio is
+    /// streaming them, in JSON for the app.
+    async fn handle_api_rovibe_status(&self) -> Response<Body> {
+        let message_queue = self.serve_session.message_queue();
+        let status = RoVibeStatusResponse {
+            session_id: self.serve_session.session_id(),
+            message_cursor: message_queue.cursor(),
+            oldest_message_cursor: message_queue.oldest_cursor(),
+            socket_clients: self.serve_session.socket_clients(),
+            rovibe_project_id: rovibe_project_id(),
+        };
+        match serde_json::to_vec(&status) {
+            Ok(body) => response(StatusCode::OK, "application/json", body),
+            Err(err) => response(StatusCode::INTERNAL_SERVER_ERROR, "text/plain", err.to_string()),
+        }
     }
 
     /// Handle WebSocket upgrade for real-time message streaming
@@ -111,6 +141,19 @@ impl ApiService {
                 );
             }
         };
+
+        // A cursor older than the retained history would silently miss
+        // messages: refused, so the client syncs again from scratch.
+        let oldest = self.serve_session.message_queue().oldest_cursor();
+        if input_cursor < oldest {
+            return msgpack(
+                ErrorResponse::gone(format!(
+                    "Message cursor {} is older than the retained history (from {})",
+                    input_cursor, oldest
+                )),
+                StatusCode::GONE,
+            );
+        }
 
         // Upgrade the connection to WebSocket
         let (response, websocket) = match upgrade(request, None) {
@@ -492,6 +535,7 @@ async fn handle_websocket_subscription(
     input_cursor: u32,
 ) -> anyhow::Result<()> {
     let mut websocket = websocket.await?;
+    let _counted = serve_session.track_socket_client();
 
     let session_id = serve_session.session_id();
     let tree_handle = serve_session.tree_handle();

@@ -41,6 +41,9 @@ local ApiInfoResponse = t.interface({
 	protocolVersion = t.number,
 	expectedPlaceIds = t.optional(t.array(t.number)),
 	rootInstanceId = RbxId,
+	messageCursor = t.optional(t.number),
+	oldestMessageCursor = t.optional(t.number),
+	rovibeProjectId = t.optional(t.string),
 })
 
 local ApiReadResponse = t.interface({

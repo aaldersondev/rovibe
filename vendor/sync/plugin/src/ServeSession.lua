@@ -189,6 +189,61 @@ function ServeSession:hookPostcommit(callback)
 	end
 end
 
+-- Pause before reopening a dropped stream, so a server that is really gone
+-- gets paced retries; and how many drops in a row are resumed before the
+-- session gives up and ends as it did before.
+local STREAM_RESUME_DELAY_SECONDS = 1
+local MAX_STREAM_RESUMES = 20
+
+--[[
+	Holds the message stream open for the life of the session. A drop under a
+	server that is still the same session, and still has every message after
+	our cursor, only reopens the stream: no new session, no full read of the
+	tree, no rehydration. Otherwise the error ends the session as before.
+]]
+function ServeSession:__streamMessages(resumes)
+	return self.__apiContext
+		:connectWebSocket({
+			["messages"] = function(messagesPacket)
+				if self.__status == Status.Disconnected then
+					return
+				end
+
+				-- Messages flowing again: this stream is healthy.
+				resumes = 0
+				Log.debug("Received {} messages from RoVibe Sync server", #messagesPacket.messages)
+
+				for _, message in messagesPacket.messages do
+					self:__applyPatch(message)
+				end
+				self.__apiContext:setMessageCursor(messagesPacket.messageCursor)
+			end,
+		})
+		:catch(function(err)
+			if self.__status == Status.Disconnected then
+				return Promise.resolve()
+			end
+			if resumes >= MAX_STREAM_RESUMES then
+				return Promise.reject(err)
+			end
+			return self.__apiContext:canResumeStream():andThen(function(canResume)
+				if self.__status == Status.Disconnected then
+					return Promise.resolve()
+				end
+				if not canResume then
+					return Promise.reject(err)
+				end
+				Log.debug("Sync stream dropped ({}); resuming it", tostring(err))
+				return Promise.delay(STREAM_RESUME_DELAY_SECONDS):andThen(function()
+					if self.__status == Status.Disconnected then
+						return Promise.resolve()
+					end
+					return self:__streamMessages(resumes + 1)
+				end)
+			end)
+		end)
+end
+
 function ServeSession:start()
 	self:__setStatus(Status.Connecting)
 	self:setLoadingText("Connecting to server...")
@@ -202,20 +257,7 @@ function ServeSession:start()
 				self:__setStatus(Status.Connected, serverInfo.projectName)
 				self:__applyGameAndPlaceId(serverInfo)
 
-				return self.__apiContext:connectWebSocket({
-					["messages"] = function(messagesPacket)
-						if self.__status == Status.Disconnected then
-							return
-						end
-
-						Log.debug("Received {} messages from Rojo server", #messagesPacket.messages)
-
-						for _, message in messagesPacket.messages do
-							self:__applyPatch(message)
-						end
-						self.__apiContext:setMessageCursor(messagesPacket.messageCursor)
-					end,
-				})
+				return self:__streamMessages(0)
 			end)
 		end)
 		:catch(function(err)

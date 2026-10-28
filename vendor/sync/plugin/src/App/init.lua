@@ -166,7 +166,11 @@ function App:init()
 		-- Lets the desktop app point Studio at a project's sync server so the
 		-- user doesn't have to type a different port for every project.
 		Bridge.setSyncController({
-			connect = function(host: string, port: string)
+			connect = function(host: string, port: string, token: string?)
+				-- The token belongs to that one server: a connection the
+				-- user types by hand elsewhere doesn't send it.
+				self.syncToken = token
+				self.syncTokenAddress = host .. ":" .. port
 				-- A session still waiting for its confirmation would
 				-- otherwise linger, and take the new one down when it
 				-- finally ends: it is answered "Abort" and given the
@@ -185,6 +189,22 @@ function App:init()
 			end,
 			disconnect = function()
 				self:endSession()
+			end,
+			-- Where this window's sync stands, for the app to tell whether
+			-- Studio holds what the server serves.
+			status = function()
+				local session = self.serveSession
+				if session == nil then
+					return { connected = false }
+				end
+				local host, port = self:getHostAndPort()
+				return {
+					connected = session:getStatus() == ServeSession.Status.Connected,
+					host = host,
+					port = tonumber(port),
+					sessionId = session.__apiContext:getSessionId(),
+					messageCursor = session.__apiContext:getMessageCursor(),
+				}
 			end,
 		})
 	end
@@ -414,6 +434,14 @@ function App:releaseSyncLock()
 	Log.trace("Could not relase sync lock because it is owned by {}", lock.Value)
 end
 
+-- The token the RoVibe app gave for this address, if it gave one.
+function App:tokenFor(host, port)
+	if self.syncTokenAddress == tostring(host) .. ":" .. tostring(port) then
+		return self.syncToken
+	end
+	return nil
+end
+
 function App:findActiveServer()
 	local host, port = self:getHostAndPort()
 	local baseUrl = if string.find(host, "^https?://")
@@ -422,7 +450,7 @@ function App:findActiveServer()
 
 	Log.trace("Checking for active sync server at {}", baseUrl)
 
-	local apiContext = ApiContext.new(baseUrl)
+	local apiContext = ApiContext.new(baseUrl, self:tokenFor(host, port))
 	return apiContext:connect():andThen(function(serverInfo)
 		apiContext:disconnect()
 		return serverInfo, host, port
@@ -652,7 +680,7 @@ function App:startSession()
 	local baseUrl = if string.find(host, "^https?://")
 		then string.format("%s:%s", host, port)
 		else string.format("http://%s:%s", host, port)
-	local apiContext = ApiContext.new(baseUrl)
+	local apiContext = ApiContext.new(baseUrl, self:tokenFor(host, port))
 
 	local serveSession = ServeSession.new({
 		apiContext = apiContext,

@@ -16,6 +16,8 @@ local HttpService = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
 local RunService = game:GetService("RunService")
 
+local PlaceMarker = require(script.Parent.PlaceMarker)
+
 local DEFAULT_PORT = 34880
 -- Version of the transport itself, so the app can tell an outdated plugin
 -- from one that merely needs its methods.
@@ -57,6 +59,8 @@ local env = {
 	end,
 	-- Ports of the sync servers of protected projects, as the app last said.
 	protectedPorts = {},
+	-- The RoVibe project this place is stamped for (`get`, `set`).
+	placeMarker = PlaceMarker,
 }
 
 -- A ModuleScript built on the fly is the one way to compile code that works
@@ -102,12 +106,13 @@ end
 
 local function connectOnce(port)
 	local url = string.format(
-		"ws://127.0.0.1:%d/studio?v=%d&placeId=%d&context=%s&name=%s",
+		"ws://127.0.0.1:%d/studio?v=%d&placeId=%d&context=%s&name=%s&project=%s",
 		port,
 		PROTOCOL_VERSION,
 		game.PlaceId,
 		getContext(),
-		HttpService:UrlEncode(game.Name)
+		HttpService:UrlEncode(game.Name),
+		HttpService:UrlEncode(PlaceMarker.get() or "")
 	)
 
 	local ok, created = pcall(HttpService.CreateWebStreamClient, HttpService, Enum.WebStreamClientType.WebSocket, {

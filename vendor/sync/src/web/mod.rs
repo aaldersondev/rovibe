@@ -6,6 +6,7 @@ mod api;
 mod assets;
 pub mod interface;
 mod origin;
+mod token;
 mod ui;
 mod util;
 
@@ -48,16 +49,19 @@ impl LiveServer {
     ) -> anyhow::Result<()> {
         let serve_session = Arc::clone(&self.serve_session);
         let allowed_hosts = origin::allowed_hosts(address.ip(), address.port(), &allowed_hosts);
+        let required_token = Arc::new(token::from_env());
 
         let make_service = make_service_fn(move |conn: &AddrStream| {
             let serve_session = Arc::clone(&serve_session);
             let allowed_hosts = allowed_hosts.clone();
+            let required_token = Arc::clone(&required_token);
             let remote_addr = conn.remote_addr();
 
             async move {
                 let service = move |req: Request<Body>| {
                     let serve_session = Arc::clone(&serve_session);
                     let allowed_hosts = allowed_hosts.clone();
+                    let required_token = Arc::clone(&required_token);
 
                     async move {
                         // Reject cross-origin requests before doing any work, to
@@ -69,6 +73,11 @@ impl LiveServer {
                         }
 
                         if req.uri().path().starts_with("/api") {
+                            if let Some(response) =
+                                token::check(&req, required_token.as_deref())
+                            {
+                                return Ok::<_, Infallible>(response);
+                            }
                             Ok::<_, Infallible>(api::call(serve_session, remote_addr, req).await)
                         } else {
                             Ok::<_, Infallible>(ui::call(serve_session, req).await)
