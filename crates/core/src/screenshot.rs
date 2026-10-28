@@ -192,7 +192,18 @@ pub fn capture(place_name: &str, viewport: Option<(i32, i32)>, max_width: u32) -
     encode(image, cropped, max_width)
 }
 
+/// The picture itself, for whoever composes several of them.
+#[cfg(windows)]
+pub fn capture_raw(place_name: &str, viewport: Option<(i32, i32)>) -> Result<(RgbImage, bool), String> {
+    win::capture(place_name, viewport)
+}
+
 #[cfg(not(windows))]
 pub fn capture(_place_name: &str, _viewport: Option<(i32, i32)>, _max_width: u32) -> Result<Capture, String> {
+    Err("La capture d'écran n'est disponible que sous Windows".into())
+}
+
+#[cfg(not(windows))]
+pub fn capture_raw(_place_name: &str, _viewport: Option<(i32, i32)>) -> Result<(RgbImage, bool), String> {
     Err("La capture d'écran n'est disponible que sous Windows".into())
 }

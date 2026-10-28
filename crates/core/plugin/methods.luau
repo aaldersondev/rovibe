@@ -575,14 +575,19 @@ return function(env)
 			table.insert(notes, "aucun chemin trouvé, marche en ligne droite")
 		end
 
-		return string.format(
-			"Position %.1f, %.1f, %.1f, à %.1f studs de la cible%s",
-			position.X,
-			position.Y,
-			position.Z,
-			((position - target) * flat).Magnitude,
-			if #notes > 0 then " (" .. table.concat(notes, " ; ") .. ")" else ""
-		)
+		local distance = ((position - target) * flat).Magnitude
+		return {
+			text = string.format(
+				"Position %.1f, %.1f, %.1f, à %.1f studs de la cible%s",
+				position.X,
+				position.Y,
+				position.Z,
+				distance,
+				if #notes > 0 then " (" .. table.concat(notes, " ; ") .. ")" else ""
+			),
+			distance = distance,
+			arrived = distance <= 4 and humanoid.Health > 0,
+		}
 	end
 
 	function methods.place_info()
@@ -654,6 +659,8 @@ return function(env)
 		return {
 			cframe = { camera.CFrame:GetComponents() },
 			focus = { camera.Focus:GetComponents() },
+			fov = camera.FieldOfView,
+			cameraType = camera.CameraType.Name,
 			width = math.round(size.X),
 			height = math.round(size.Y),
 		}
@@ -661,9 +668,492 @@ return function(env)
 
 	function methods.camera_set(params)
 		local camera = workspace.CurrentCamera
+		-- The type first: a game's camera script takes a Custom camera back
+		-- as soon as it is set, and must find it where it was.
+		if params.cameraType then
+			pcall(function()
+				camera.CameraType = (Enum.CameraType :: any)[params.cameraType]
+			end)
+		end
+		if params.fov then
+			camera.FieldOfView = params.fov
+		end
 		camera.CFrame = CFrame.new(table.unpack(params.cframe))
 		camera.Focus = CFrame.new(table.unpack(params.focus))
 		return "ok"
+	end
+
+	-- Where something is and how big, for pointing a camera at it.
+	local function extent(instance)
+		if instance:IsA("Model") then
+			local cframe, size = instance:GetBoundingBox()
+			return cframe.Position, size.Magnitude / 2
+		elseif instance:IsA("BasePart") then
+			return instance.Position, instance.Size.Magnitude / 2
+		elseif instance:IsA("Attachment") then
+			return instance.WorldPosition, 4
+		elseif instance:IsA("PVInstance") then
+			return instance:GetPivot().Position, 8
+		end
+		return nil, nil
+	end
+
+	-- Points the camera at a target from a chosen angle. Returns the camera
+	-- as it was, for the app to put it back once the picture is taken, and
+	-- where it was put, to tell afterwards whether a game script moved it.
+	function methods.frame_camera(params)
+		local camera = workspace.CurrentCamera
+		local before = methods.camera_get()
+
+		local center, radius
+		if params.target then
+			local instance, resolveError = resolvePath(params.target)
+			if not instance then
+				error(resolveError, 0)
+			end
+			center, radius = extent(instance)
+			if not center then
+				error(getFullPath(instance) .. " n'a pas de position : vise un Model, une BasePart ou un Attachment", 0)
+			end
+		end
+		if params.look_at then
+			center = Vector3.new(params.look_at[1], params.look_at[2], params.look_at[3])
+			radius = radius or 8
+		end
+		if not center then
+			error("`frame` attend `target` (chemin) ou `look_at` ([x, y, z])", 0)
+		end
+		radius = math.max(radius, 1)
+
+		local fov = if params.fov then math.clamp(params.fov, 1, 120) else camera.FieldOfView
+		local position
+		local elevation = math.clamp(params.elevation or 25, -89, 90)
+		if params.position then
+			position = Vector3.new(params.position[1], params.position[2], params.position[3])
+		else
+			local azimuth = math.rad(params.azimuth or 45)
+			local pitch = math.rad(elevation)
+			local distance = params.distance or radius / math.tan(math.rad(fov / 2)) * 1.2
+			local direction = Vector3.new(math.sin(azimuth) * math.cos(pitch), math.sin(pitch), math.cos(azimuth) * math.cos(pitch))
+			position = center + direction * distance
+		end
+		-- Straight down, "up" is undefined: the top of the picture faces -Z.
+		local up = if elevation > 89 then Vector3.new(0, 0, -1) else Vector3.yAxis
+		local cframe = CFrame.lookAt(position, center, up)
+
+		if RunService:IsRunning() then
+			camera.CameraType = Enum.CameraType.Scriptable
+		end
+		camera.FieldOfView = fov
+		camera.CFrame = cframe
+		camera.Focus = CFrame.new(center)
+		return { before = before, expected = { cframe:GetComponents() } }
+	end
+
+	-- Whether the camera is still where frame_camera put it.
+	function methods.camera_held(params)
+		local expected = CFrame.new(table.unpack(params.expected))
+		local current = workspace.CurrentCamera.CFrame
+		return (current.Position - expected.Position).Magnitude < 0.05
+			and current.LookVector:Dot(expected.LookVector) > 0.9999
+	end
+
+	-- What the user has selected in Studio, which is what they mean by
+	-- "this" or "that part"; optionally selects instances instead.
+	function methods.selection(params)
+		local Selection = game:GetService("Selection")
+		local lines = {}
+		if params.select then
+			local wanted, missing = {}, {}
+			for _, path in params.select do
+				local instance, resolveError = resolvePath(path)
+				if instance then
+					table.insert(wanted, instance)
+				else
+					table.insert(missing, path .. " (" .. tostring(resolveError) .. ")")
+				end
+			end
+			Selection:Set(wanted)
+			if #missing > 0 then
+				table.insert(lines, "Introuvable, donc pas sélectionné : " .. table.concat(missing, ", "))
+			end
+		end
+
+		local current = Selection:Get()
+		if #current == 0 then
+			table.insert(lines, "0 sélectionné : rien n'est sélectionné dans Studio. Demande à l'utilisateur de cliquer ce dont il parle dans l'explorateur ou la vue 3D, ou passe `select`.")
+			return table.concat(lines, "\n")
+		end
+		table.insert(lines, string.format("%d sélectionné(s) :", #current))
+		for index, instance in current do
+			if index > 50 then
+				table.insert(lines, string.format("… et %d autres", #current - 50))
+				break
+			end
+			local line = "  " .. getFullPath(instance) .. " [" .. instance.ClassName .. "]"
+			local center = extent(instance)
+			if center then
+				line ..= string.format(" à (%.1f, %.1f, %.1f)", center.X, center.Y, center.Z)
+			end
+			table.insert(lines, line)
+		end
+		return table.concat(lines, "\n")
+	end
+
+	-- Appends a titled list of findings, cut after `limit` items.
+	local function report(lines, title, items, advice, limit)
+		if #items == 0 then
+			return false
+		end
+		table.insert(lines, string.format("✗ %d %s", #items, title))
+		for index, item in items do
+			if index > (limit or 8) then
+				table.insert(lines, string.format("    … et %d autres", #items - (limit or 8)))
+				break
+			end
+			table.insert(lines, "    " .. item)
+		end
+		if advice then
+			table.insert(lines, "    → " .. advice)
+		end
+		return true
+	end
+
+	-- Checks that a model holds together: every part reachable from its
+	-- PrimaryPart through welds or Motor6Ds, and nothing that keeps a joint
+	-- from moving.
+	function methods.rig_check(params)
+		local model, resolveError = resolvePath(params.path)
+		if not model then
+			error(resolveError, 0)
+		end
+		if not model:IsA("Model") then
+			error(getFullPath(model) .. " est un " .. model.ClassName .. ", pas un Model", 0)
+		end
+
+		local parts = {}
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				table.insert(parts, descendant)
+			end
+		end
+		local lines = { string.format("rig_check sur %s : %d pièce(s)", getFullPath(model), #parts) }
+		if #parts == 0 then
+			table.insert(lines, "✗ aucune BasePart : rien à assembler")
+			return table.concat(lines, "\n")
+		end
+
+		local humanoid = model:FindFirstChildWhichIsA("Humanoid")
+		local root = model.PrimaryPart or (humanoid and model:FindFirstChild("HumanoidRootPart"))
+		if not root then
+			table.insert(lines, "✗ pas de PrimaryPart : choisis la pièce dont tout dépend (torse, châssis, poignée) ; chaque vérification part d'elle")
+			return table.concat(lines, "\n")
+		end
+		table.insert(lines, "✓ racine : " .. root.Name)
+
+		-- Welds and every JointInstance (Weld, Motor6D, Snap…) hold parts
+		-- together. Hinges and ropes are physics, not links.
+		local links, motors, driven, broken = {}, {}, {}, {}
+		local function link(a, b)
+			links[a] = links[a] or {}
+			links[b] = links[b] or {}
+			table.insert(links[a], b)
+			table.insert(links[b], a)
+		end
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("WeldConstraint") or descendant:IsA("JointInstance") then
+				local a, b = (descendant :: any).Part0, (descendant :: any).Part1
+				if a == nil or b == nil then
+					table.insert(broken, getFullPath(descendant) .. " : Part0 ou Part1 vide")
+				elseif a == b then
+					table.insert(broken, getFullPath(descendant) .. " : relie une pièce à elle-même")
+				else
+					link(a, b)
+					if descendant:IsA("Motor6D") then
+						table.insert(motors, descendant)
+						driven[b] = (driven[b] or 0) + 1
+					end
+				end
+			end
+		end
+
+		local reached, count, queue = { [root] = true }, 1, { root }
+		while #queue > 0 do
+			local current = table.remove(queue)
+			for _, other in links[current] or {} do
+				if not reached[other] then
+					reached[other] = true
+					count += 1
+					table.insert(queue, other)
+				end
+			end
+		end
+
+		local loose, anchoredLimbs = {}, {}
+		for _, part in parts do
+			if not reached[part] then
+				table.insert(
+					loose,
+					getFullPath(part)
+						.. if part.Anchored then " (ancrée : reste sur place au lieu de suivre)" else " (non ancrée : tombe dès que la physique démarre)"
+				)
+			elseif part ~= root and part.Anchored and #motors > 0 then
+				table.insert(anchoredLimbs, getFullPath(part))
+			end
+		end
+
+		local stuck, doubled = {}, {}
+		for _, motor in motors do
+			if motor.C0 == CFrame.identity and motor.C1 == CFrame.identity then
+				table.insert(stuck, string.format("%s : %s collée au centre de %s", getFullPath(motor), motor.Part1.Name, motor.Part0.Name))
+			end
+		end
+		for part, drivers in driven do
+			if drivers > 1 then
+				table.insert(doubled, string.format("%s est Part1 de %d Motor6D", getFullPath(part), drivers))
+			end
+		end
+
+		local found = false
+		found = report(lines, "pièce(s) non reliée(s) à la racine", loose, "soude chaque pièce à la racine (WeldConstraint), puis remplace par un Motor6D la soudure des pièces qui doivent bouger") or found
+		found = report(lines, "joint(s) cassé(s)", broken, "supprime-les ou répare-les : un joint sans pièce ne tient rien") or found
+		found = report(lines, "pièce(s) ancrée(s) dans un modèle animé", anchoredLimbs, "une pièce ancrée ne suit pas son Motor6D : n'ancre que la racine, et seulement pour une machine fixe") or found
+		found = report(lines, "Motor6D avec C0 et C1 à l'identité", stuck, "place le pivot à la charnière réelle : C0 = Part0.CFrame:Inverse() * pivot, C1 = Part1.CFrame:Inverse() * pivot") or found
+		found = report(lines, "pièce(s) pilotée(s) par plusieurs Motor6D", doubled, "un seul Motor6D par pièce animée") or found
+
+		if humanoid then
+			local animator = humanoid:FindFirstChildWhichIsA("Animator")
+			table.insert(lines, string.format("Humanoid %s, %s Animator%s", humanoid.RigType.Name, if animator then "avec" else "sans", if root.Anchored then ", racine ANCRÉE : le personnage ne bougera pas" else ""))
+		end
+		table.insert(lines, string.format("%d Motor6D, %d/%d pièce(s) reliée(s) à la racine", #motors, count, #parts))
+		if not found then
+			table.insert(lines, "✓ aucun problème d'assemblage")
+		end
+		return table.concat(lines, "\n")
+	end
+
+	-- What sits under a model: how far it floats above, or sinks into, the
+	-- first thing below it.
+	local function grounding(instance, center, size)
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { instance }
+		local bottom = center.Y - size.Y / 2
+		local from = Vector3.new(center.X, center.Y + size.Y / 2 + 1, center.Z)
+		local hit = workspace:Raycast(from, Vector3.new(0, -(size.Y + 200), 0), params)
+		if not hit then
+			return "⚠ rien en dessous sur 200 studs : il flotte dans le vide"
+		end
+		local gap = bottom - hit.Position.Y
+		local under = getFullPath(hit.Instance)
+		if gap > 0.1 then
+			return string.format("⚠ flotte à %.2f studs au-dessus de %s", gap, under)
+		elseif gap < -0.1 then
+			return string.format("⚠ s'enfonce de %.2f studs dans %s", -gap, under)
+		end
+		return "✓ posé sur " .. under
+	end
+
+	-- Size, make-up and placement of models or parts, before building with
+	-- them or after placing them.
+	function methods.asset_check(params)
+		local paths = params.paths or { params.path }
+		local lines = {}
+		for _, path in paths do
+			local instance, resolveError = resolvePath(path)
+			if not instance then
+				table.insert(lines, tostring(path) .. " : " .. tostring(resolveError))
+				continue
+			end
+			if instance:IsA("Model") then
+				local cframe, size = instance:GetBoundingBox()
+				local parts, meshes, unanchored, joints, scripts = 0, 0, 0, 0, 0
+				for _, descendant in instance:GetDescendants() do
+					if descendant:IsA("BasePart") then
+						parts += 1
+						if descendant:IsA("MeshPart") or descendant:IsA("UnionOperation") then
+							meshes += 1
+						end
+						if not descendant.Anchored then
+							unanchored += 1
+						end
+					elseif descendant:IsA("JointInstance") or descendant:IsA("WeldConstraint") then
+						joints += 1
+					elseif descendant:IsA("BaseScript") then
+						scripts += 1
+					end
+				end
+				table.insert(lines, string.format("%s [Model] %.1f × %.1f × %.1f studs, centre (%.1f, %.1f, %.1f)", getFullPath(instance), size.X, size.Y, size.Z, cframe.X, cframe.Y, cframe.Z))
+				table.insert(lines, string.format("  %d pièce(s) dont %d mesh/union, %d joint(s), %d non ancrée(s), %d script(s)", parts, meshes, joints, unanchored, scripts))
+				if parts == 0 then
+					table.insert(lines, "  ✗ aucune BasePart : rien à voir")
+					continue
+				end
+				local primary = instance.PrimaryPart
+				if not primary then
+					table.insert(lines, "  ⚠ pas de PrimaryPart : PivotTo et les déplacements par script tournent autour d'un point arbitraire")
+				else
+					local upY = primary.CFrame.UpVector.Y
+					if upY < -0.99 then
+						table.insert(lines, "  ⚠ PrimaryPart à l'envers (UpVector vers le bas)")
+					elseif upY < 0.99 then
+						table.insert(lines, "  ⚠ PrimaryPart penchée : tourner le modèle par son pivot le penchera aussi")
+					else
+						table.insert(lines, "  ✓ PrimaryPart " .. primary.Name .. ", droite")
+					end
+				end
+				if unanchored > 0 and joints == 0 then
+					table.insert(lines, string.format("  ⚠ %d pièce(s) non ancrée(s) sans aucun joint : elles tomberont séparément", unanchored))
+				end
+				if instance:IsDescendantOf(workspace) then
+					table.insert(lines, "  " .. grounding(instance, cframe.Position, size))
+				end
+			elseif instance:IsA("BasePart") then
+				table.insert(lines, string.format("%s [%s] %.1f × %.1f × %.1f studs à (%.1f, %.1f, %.1f), %s", getFullPath(instance), instance.ClassName, instance.Size.X, instance.Size.Y, instance.Size.Z, instance.Position.X, instance.Position.Y, instance.Position.Z, if instance.Anchored then "ancrée" else "NON ANCRÉE"))
+				if instance:IsDescendantOf(workspace) then
+					local size = instance.CFrame:VectorToWorldSpace(instance.Size)
+					table.insert(lines, "  " .. grounding(instance, instance.Position, Vector3.new(math.abs(size.X), math.abs(size.Y), math.abs(size.Z))))
+				end
+			else
+				table.insert(lines, getFullPath(instance) .. " est un " .. instance.ClassName .. " : asset_check lit les Models et les BaseParts")
+			end
+		end
+		return table.concat(lines, "\n")
+	end
+
+	-- Measures an interface as it is drawn: what sticks out of the screen,
+	-- text that doesn't fit, buttons too small to tap or covering each other.
+	function methods.ui_check(params)
+		local guiRoots = {}
+		if params.path then
+			local instance, resolveError = resolvePath(params.path)
+			if not instance then
+				error(resolveError, 0)
+			end
+			table.insert(guiRoots, instance)
+		elseif RunService:IsRunning() then
+			local player = game:GetService("Players").LocalPlayer
+			if not player then
+				error("Pendant un test, l'interface se mesure dans le client (context: \"client\")", 0)
+			end
+			table.insert(guiRoots, player:WaitForChild("PlayerGui", 5))
+		else
+			table.insert(guiRoots, game:GetService("StarterGui"))
+		end
+
+		local viewport = workspace.CurrentCamera.ViewportSize
+		local inset = game:GetService("GuiService"):GetGuiInset()
+		local offscreen, clipped, tiny, overlapping, fixed = {}, {}, {}, {}, {}
+		local measured, buttons = 0, {}
+
+		local function visibleUnder(object)
+			local current = object
+			while current and current:IsA("GuiObject") do
+				if not current.Visible then
+					return false
+				end
+				current = current.Parent
+			end
+			if current and current:IsA("LayerCollector") then
+				return (current :: any).Enabled ~= false
+			end
+			return current ~= nil
+		end
+
+		local function clippedByParent(object)
+			local current = object.Parent
+			while current and current:IsA("GuiObject") do
+				if current.ClipsDescendants or current:IsA("ScrollingFrame") then
+					return true
+				end
+				current = current.Parent
+			end
+			return false
+		end
+
+		for _, guiRoot in guiRoots do
+			for _, object in guiRoot:GetDescendants() do
+				if not object:IsA("GuiObject") or not visibleUnder(object) then
+					continue
+				end
+				local screen = object:FindFirstAncestorWhichIsA("ScreenGui")
+				if not screen then
+					continue
+				end
+				local position, size = object.AbsolutePosition, object.AbsoluteSize
+				if size.X <= 0 or size.Y <= 0 then
+					continue
+				end
+				measured += 1
+				-- AbsolutePosition starts below the top bar unless the
+				-- ScreenGui ignores it.
+				local area = if screen.IgnoreGuiInset then viewport else viewport - inset
+				if not clippedByParent(object) then
+					local over = math.max(-position.X, -position.Y, position.X + size.X - area.X, position.Y + size.Y - area.Y)
+					if over > 2 then
+						table.insert(offscreen, string.format("%s dépasse de %d px", getFullPath(object), math.round(over)))
+					end
+				end
+				if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+					local text = object :: any
+					if not text.TextScaled and text.Text ~= "" and not text.TextFits then
+						table.insert(clipped, string.format("%s : « %s »", getFullPath(object), string.sub(text.Text, 1, 40)))
+					end
+				end
+				if object:IsA("GuiButton") then
+					table.insert(buttons, object)
+					if size.X < 32 or size.Y < 32 then
+						table.insert(tiny, string.format("%s : %d × %d px", getFullPath(object), math.round(size.X), math.round(size.Y)))
+					end
+				end
+				if object.Parent == screen and object.Size.X.Scale == 0 and object.Size.X.Offset > 400 then
+					table.insert(fixed, string.format("%s : %d px de large, fixe", getFullPath(object), object.Size.X.Offset))
+				end
+			end
+		end
+
+		-- Two buttons stacked on each other: the one drawn on top swallows the
+		-- clicks meant for the other.
+		for i = 1, math.min(#buttons, 150) do
+			for j = i + 1, math.min(#buttons, 150) do
+				local a, b = buttons[i], buttons[j]
+				if a:IsAncestorOf(b) or b:IsAncestorOf(a) then
+					continue
+				end
+				if a:FindFirstAncestorWhichIsA("ScreenGui") ~= b:FindFirstAncestorWhichIsA("ScreenGui") then
+					continue
+				end
+				local left = math.max(a.AbsolutePosition.X, b.AbsolutePosition.X)
+				local top = math.max(a.AbsolutePosition.Y, b.AbsolutePosition.Y)
+				local right = math.min(a.AbsolutePosition.X + a.AbsoluteSize.X, b.AbsolutePosition.X + b.AbsoluteSize.X)
+				local bottom = math.min(a.AbsolutePosition.Y + a.AbsoluteSize.Y, b.AbsolutePosition.Y + b.AbsoluteSize.Y)
+				if right > left and bottom > top then
+					local shared = (right - left) * (bottom - top)
+					local smaller = math.min(a.AbsoluteSize.X * a.AbsoluteSize.Y, b.AbsoluteSize.X * b.AbsoluteSize.Y)
+					if smaller > 0 and shared / smaller > 0.3 then
+						table.insert(overlapping, getFullPath(a) .. " et " .. getFullPath(b))
+					end
+				end
+			end
+		end
+
+		local lines = { string.format("ui_check : %d élément(s) visibles mesurés, écran %d × %d px", measured, math.round(viewport.X), math.round(viewport.Y)) }
+		if measured == 0 then
+			table.insert(lines, "Rien de mesuré : aucune interface visible ici. En édition, StarterGui doit avoir ShowDevelopmentGui ; pendant un test, mesure en contexte client.")
+			return table.concat(lines, "\n")
+		end
+		local found = false
+		found = report(lines, "élément(s) hors de l'écran", offscreen, "ancre-le (AnchorPoint) et positionne-le en Scale plutôt qu'en pixels") or found
+		found = report(lines, "texte(s) coupé(s)", clipped, "agrandis la zone, raccourcis le texte, ou TextScaled avec un UITextSizeConstraint") or found
+		found = report(lines, "bouton(s) de moins de 32 px", tiny, "au moins 44 px pour un doigt sur téléphone") or found
+		found = report(lines, "paire(s) de boutons qui se recouvrent", overlapping, "celui du dessus prend les clics de l'autre : écarte-les ou règle ZIndex/Visible") or found
+		if #fixed > 0 then
+			report(lines, "cadre(s) de largeur fixe (indicatif)", fixed, "plus large que la moitié d'un téléphone : préfère Scale ou un UIScale")
+		end
+		if not found then
+			table.insert(lines, "✓ aucun problème mesuré")
+		end
+		return table.concat(lines, "\n")
 	end
 
 	function methods.focus_camera(params)

@@ -7,6 +7,7 @@
 mod agents;
 mod api;
 mod assets;
+mod drive;
 mod git;
 mod guard;
 mod import;
@@ -21,6 +22,7 @@ mod projects;
 mod pty;
 mod screenshot;
 mod settings;
+mod sheet;
 mod state;
 mod studio;
 mod sync;

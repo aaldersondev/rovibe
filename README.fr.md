@@ -43,6 +43,8 @@ Ils écrivent du TypeScript typé, compilé en Luau à chaque enregistrement. St
 | **Sessions** | Claude Code et Codex dans des panneaux côte à côte, ou un à la fois en onglets. On réordonne un panneau en glissant son en-tête. |
 | **État** | Chaque panneau indique si son agent travaille, attend ta réponse ou a fini. Windows te prévient quand l'app n'est pas au premier plan. |
 | **Verrous** | Un fichier modifié par un agent lui est réservé 10 minutes. Un autre agent qui essaie de le modifier est refusé et apprend qui le tient, tout comme une commande shell qui l'écraserait. Les agents peuvent réserver à l'avance (`claim_files`) et voir qui fait quoi (`agents_status`). |
+| **Tour de Studio** | Un seul agent à la fois lance des tests, prend des captures ou joue au jeu dans une place. Les autres apprennent qui pilote et attendent leur tour dans une file (`studio_wait`) au lieu de se gâcher leurs tests. La main se libère seule après 30 s sans action, 3 minutes pendant un test. |
+| **Console par agent** | Chaque agent ne reçoit que les lignes de la console qu'il n'a pas encore lues, et le `print` de son `run_luau` ne revient qu'à lui. |
 | **Branche à part** | En option, chaque agent travaille dans sa copie du projet, sur sa branche git. Tu lis ses fichiers et son diff, puis tu fusionnes. Une fusion en conflit est annulée et les fichiers concernés sont nommés. |
 | **Consignes groupées** | Une consigne part vers plusieurs agents d'un coup. Les consignes fréquentes sont enregistrées dans le projet. |
 | **Arrière-plan** | Les agents tournent dans un serveur séparé de la fenêtre. Fermer la fenêtre, mettre l'app à jour ou un plantage n'arrête pas les sessions. |
@@ -56,7 +58,9 @@ Ils écrivent du TypeScript typé, compilé en Luau à chaque enregistrement. St
 | **RoVibe Sync** | Le code vit dans des fichiers, Studio reflète chaque enregistrement en 100 ms environ. Un nouveau projet part d'un modèle (TypeScript ou Luau) ou des scripts d'une place déjà ouverte dans Studio. |
 | **Pont Studio** | Le plugin garde un WebSocket ouvert vers l'app : un seul aller-retour local par appel d'outil, sans polling. Les outils se mettent à jour sans redémarrer Studio. |
 | **Jouer le test** | Les agents lancent un test Play, déplacent le personnage (pathfinding) et envoient de vraies touches, clics, molette et mouvements de caméra, y compris un clic sur un élément d'interface désigné par son chemin. Tout se passe en arrière-plan : ton clavier et ta souris restent à toi. |
-| **Captures** | L'app photographie la vue 3D de Studio, même derrière d'autres fenêtres, et peut d'abord cadrer une instance. |
+| **Vérifier en un appel** | `playtest_check` attend que le code soit compilé et arrivé dans Studio, lance un test neuf, prépare la scène, marche, vérifie, lit les consoles serveur et client, prend une capture et arrête le test, même en cas d'échec. Verdict PASS, FAIL (cause nommée) ou INCONCLUSIVE (code pas garanti à jour). Les scénarios s'enregistrent dans `.rovibe/tests/` pour être rejoués. |
+| **Captures** | L'app photographie la vue 3D de Studio, même derrière d'autres fenêtres. `frame` place la caméra sous l'angle voulu (azimut, élévation, distance, champ de vision), puis la remet exactement où elle était. `capture_sequence` prend une rafale et la rend en planche-contact horodatée : animations, effets, transitions. |
+| **Diagnostics** | `rig_check` (un modèle tient-il ensemble ?), `asset_check` (dimensions, posé ou flottant), `ui_check` (hors écran, texte coupé, boutons trop petits ou superposés) et `selection` (ce que l'utilisateur montre dans Studio). |
 | **Vérification du code** | `check_code` donne les erreurs du compilateur dans un projet TypeScript, et lance selene et luau-lsp dans un projet Luau. À chaque fichier écrit par un agent, ses erreurs lui reviennent aussitôt. |
 | **Publication** | Un bouton, ou l'outil `publish` après ton accord. RoVibe relit ensuite chez Roblox la date de mise à jour de la place pour confirmer la publication. |
 | **Studio bloqué** | Une boîte de dialogue ouverte dans Studio (« Auto Recovery » après un plantage, par exemple) est signalée, et aucun test ne démarre tant qu'elle est là. |
@@ -79,12 +83,13 @@ Chaque session d'agent reçoit automatiquement le serveur MCP `rovibe`.
 
 | Domaine | Outils |
 |---|---|
-| Lire le jeu | `get_tree`, `get_instance`, `search`, `get_console`, `studio_status` |
+| Lire le jeu | `get_tree`, `get_instance`, `search`, `get_console`, `selection`, `studio_status` |
 | Le modifier | `run_luau` (édition, serveur ou client), `sync_connect`, `check_code` |
-| Y jouer | `playtest`, `play_move`, `play_input`, `screenshot` |
+| Y jouer | `playtest_check`, `playtest`, `play_move`, `play_input`, `screenshot`, `capture_sequence` |
+| Diagnostiquer | `rig_check`, `asset_check`, `ui_check` |
 | Assets | `asset_search`, `asset_preview`, `asset_insert`, `asset_save` |
 | Publier | `publish` (après ton accord) |
-| Travail d'équipe | `agents_status`, `claim_files`, `release_files` |
+| Travail d'équipe | `agents_status`, `claim_files`, `release_files`, `studio_wait`, `studio_release` |
 
 ## Fonctionnement
 

@@ -43,6 +43,8 @@ They write typed TypeScript, compiled to Luau as they save. Studio mirrors it li
 | **Sessions** | Claude Code and Codex in panes side by side, or one at a time in tabs. Drag a pane's header to reorder it. |
 | **Status** | Each pane shows whether its agent is working, waiting for you or done. Windows notifies you when the app isn't in front. |
 | **File locks** | A file an agent edits is reserved for it for 10 minutes. Another agent that tries to edit it is refused and told who holds it, and so are shell commands that would overwrite it. Agents can reserve files ahead (`claim_files`) and see who is doing what (`agents_status`). |
+| **Studio turns** | One agent at a time starts tests, takes screenshots or plays the game in a place. The others are told who is driving and wait their turn in line (`studio_wait`) instead of spoiling each other's tests. The turn frees itself after 30 s without action, 3 minutes during a test. |
+| **Console per agent** | Each agent only gets the console lines it hasn't read yet, and what its `run_luau` prints comes back to it alone. |
 | **Own branch** | Optionally, each agent works in its own copy of the project, on its own git branch. Review its files and diff, then merge. A merge that conflicts is undone and the files involved are named. |
 | **Shared prompts** | Send one prompt to several agents at once. Save the ones you use often in the project. |
 | **Background** | The agents run in a server separate from the window. Close the window, update the app or let it crash: the sessions keep running. |
@@ -56,7 +58,9 @@ They write typed TypeScript, compiled to Luau as they save. Studio mirrors it li
 | **RoVibe Sync** | Code lives in files, and Studio mirrors each save in about 100 ms. Start a new project from a template (TypeScript or Luau) or from the scripts of a place already open in Studio. |
 | **Studio bridge** | The plugin keeps a WebSocket open to the app: one local round trip per tool call, with no polling. Tools update without restarting Studio. |
 | **Playtesting** | Agents start a Play test, walk the character with pathfinding, and send real keys, clicks, mouse wheel and camera moves, including clicks on an interface element named by its path. All of it happens in the background, so your keyboard and mouse stay yours. |
-| **Screenshots** | The app captures Studio's 3D view, even when Studio is behind other windows, and can frame an instance first. |
+| **Check in one call** | `playtest_check` waits for the code to be compiled and in Studio, starts a fresh test, sets the scene up, walks, asserts, reads the server and client consoles, takes a screenshot and stops the test, even when something fails. Verdict PASS, FAIL (cause named) or INCONCLUSIVE (code not guaranteed up to date). Scenarios are saved in `.rovibe/tests/` to be replayed. |
+| **Screenshots** | The app captures Studio's 3D view, even when Studio is behind other windows. `frame` points the camera from the angle asked for (azimuth, elevation, distance, field of view), then puts it back exactly where it was. `capture_sequence` takes a burst and returns a time-stamped contact sheet: animations, effects, transitions. |
+| **Diagnostics** | `rig_check` (does a model hold together?), `asset_check` (size, grounded or floating), `ui_check` (off screen, clipped text, buttons too small or overlapping) and `selection` (what the user points at in Studio). |
 | **Code checking** | `check_code` reports the compiler's errors in a TypeScript project, and runs selene and luau-lsp in a Luau one. Each time an agent writes a file, its errors go straight back to it. |
 | **Publishing** | One button, or the `publish` tool after your approval. RoVibe then reads the place's last update date from Roblox to confirm the publish went through. |
 | **Blocked Studio** | An open dialog in Studio (such as "Auto Recovery" after a crash) is reported, and no test starts while it's there. |
@@ -79,12 +83,13 @@ Every agent session gets the `rovibe` MCP server automatically.
 
 | Area | Tools |
 |---|---|
-| Read the game | `get_tree`, `get_instance`, `search`, `get_console`, `studio_status` |
+| Read the game | `get_tree`, `get_instance`, `search`, `get_console`, `selection`, `studio_status` |
 | Change it | `run_luau` (edit, server or client), `sync_connect`, `check_code` |
-| Play it | `playtest`, `play_move`, `play_input`, `screenshot` |
+| Play it | `playtest_check`, `playtest`, `play_move`, `play_input`, `screenshot`, `capture_sequence` |
+| Diagnose | `rig_check`, `asset_check`, `ui_check` |
 | Assets | `asset_search`, `asset_preview`, `asset_insert`, `asset_save` |
 | Ship it | `publish` (after your approval) |
-| Teamwork | `agents_status`, `claim_files`, `release_files` |
+| Teamwork | `agents_status`, `claim_files`, `release_files`, `studio_wait`, `studio_release` |
 
 ## How it works
 

@@ -150,6 +150,11 @@ pub struct AppState {
     pub studios: Mutex<HashMap<u64, Arc<Studio>>>,
     pub syncs: Mutex<HashMap<String, SyncProc>>,
     pub logs: Mutex<LogBuffer>,
+    /// The last console line each agent session has read, so that
+    /// `get_console` hands it only what is new to it.
+    pub console_cursors: Mutex<HashMap<String, u64>>,
+    /// Which agent drives Studio for each project.
+    pub drives: crate::drive::Drives,
     pub locks: Mutex<Vec<Lock>>,
     pub settings: Mutex<crate::settings::Settings>,
     /// Agent sessions that were open when the app last closed, waiting for
@@ -198,6 +203,8 @@ impl AppState {
             studios: Mutex::default(),
             syncs: Mutex::default(),
             logs: Mutex::default(),
+            console_cursors: Mutex::default(),
+            drives: crate::drive::Drives::default(),
             locks: Mutex::default(),
             dormant: Mutex::default(),
             approvals: Mutex::default(),
