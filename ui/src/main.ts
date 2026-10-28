@@ -759,9 +759,9 @@ async function openChangesDialog(project: Project) {
             "small",
             {},
             [
-              CHANGE_LABELS[change.status],
+              tr(CHANGE_LABELS[change.status]),
               `+${change.added} −${change.deleted}`,
-              change.agents.length ? change.agents.join(", ") : "auteur inconnu (session fermée ou modification à la main)",
+              change.agents.length ? change.agents.join(", ") : tr("auteur inconnu (session fermée ou modification à la main)"),
             ].join(", "),
           ),
         ),

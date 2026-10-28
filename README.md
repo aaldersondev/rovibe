@@ -1,108 +1,140 @@
+<div align="center">
+
+<img src="docs/media/logo.png" alt="RoVibe" width="112">
+
 # RoVibe
 
-English · [Français](README.fr.md)
+### Vibe Code Together in Roblox Studio.
 
-**Vibe Code Together in Roblox Studio.**
+Run Claude Code and Codex side by side on one Roblox game.<br>
+They write Luau in real files, Studio mirrors it live, and the agents can play the game to check their work.
 
-`Multi-Agent` · `MCP` · `Studio Sync`
+[![Latest release](https://img.shields.io/github/v/release/aaldersondev/rovibe?label=release&color=8B5CF6)](https://github.com/aaldersondev/rovibe/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/aaldersondev/rovibe/total?color=22D3EE)](https://github.com/aaldersondev/rovibe/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/aaldersondev/rovibe/ci.yml?branch=main&label=tests)](https://github.com/aaldersondev/rovibe/actions/workflows/ci.yml)
+![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-171A22)
+[![MIT](https://img.shields.io/badge/license-MIT-171A22)](LICENSE)
 
-**RoVibe — Multi-Agent AI Coding for Roblox Studio**
+[**Download**](https://github.com/aaldersondev/rovibe/releases/latest) · [Features](#features) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Build](#build-from-source) · [Français](README.fr.md)
 
-> Connect Claude Code, Codex, and other AI coding agents to a shared Roblox Studio project. Real-time file synchronization, MCP integration, and multi-agent coordination.
+<br>
 
-A desktop app for building Roblox games with several coding agents working side by side (Claude Code, Codex) on one project.
+<img src="docs/media/agents.png" alt="Three Claude Code agents working on the same Roblox project in RoVibe" width="100%">
+
+<sub>Three Claude Code agents building a checkpoint system, a stage HUD and kill bricks for the same obby, at the same time.</sub>
+
+</div>
+
+---
+
+## Why RoVibe
+
+- **Several agents, one game.** Each agent gets its own terminal in the project folder. RoVibe stops them from overwriting each other's files, and can give each one its own git branch.
+- **Studio in the loop.** A fork of [Rojo](https://github.com/rojo-rbx/rojo) keeps Studio in sync with the files. Every agent gets an MCP server that reads the game, runs Luau, plays the test and takes screenshots. A tool call takes about 1 ms.
+- **You stay in charge.** Every change is listed with the agent that made it, and every project is a git repository you can roll back. Publishing, or syncing into a live game, waits for your approval.
+- **Your own subscription.** RoVibe includes no model. Each agent signs in with your Claude or ChatGPT account, and everything runs on your PC.
+
+## Features
+
+### Agents side by side
+| | |
+|---|---|
+| **Sessions** | Claude Code and Codex in panes side by side, or one at a time in tabs. Drag a pane's header to reorder it. |
+| **Status** | Each pane shows whether its agent is working, waiting for you or done. Windows notifies you when the app isn't in front. |
+| **File locks** | A file an agent edits is reserved for it for 10 minutes. Another agent that tries to edit it is refused and told who holds it, and so are shell commands that would overwrite it. Agents can reserve files ahead (`claim_files`) and see who is doing what (`agents_status`). |
+| **Own branch** | Optionally, each agent works in its own copy of the project, on its own git branch. Review its files and diff, then merge. A merge that conflicts is undone and the files involved are named. |
+| **Shared prompts** | Send one prompt to several agents at once. Save the ones you use often in the project. |
+| **Background** | The agents run in a server separate from the window. Close the window, update the app or let it crash: the sessions keep running. |
+| **Resume** | Claude Code sessions still open when the app closed are offered again at the next launch, with their conversation. |
+| **Isolation** | Optionally, run an agent in a locked-down WSL distribution: only the project folder is visible, and the network only reaches the model's API and the hosts you allow. |
+
+### Roblox Studio, live
+| | |
+|---|---|
+| **RoVibe Sync** | Code lives in files, and Studio mirrors each save in about 100 ms. Start a new project from a template or from the scripts of a place already open in Studio. |
+| **Studio bridge** | The plugin keeps a WebSocket open to the app: one local round trip per tool call, with no polling. Tools update without restarting Studio. |
+| **Playtesting** | Agents start a Play test, walk the character with pathfinding, and send real keys, clicks, mouse wheel and camera moves, including clicks on an interface element named by its path. All of it happens in the background, so your keyboard and mouse stay yours. |
+| **Screenshots** | The app captures Studio's 3D view, even when Studio is behind other windows, and can frame an instance first. |
+| **Code checking** | `check_code` runs selene and luau-lsp. Each time a Claude Code agent writes a file, the selene errors go straight back to it. |
+| **Publishing** | One button, or the `publish` tool after your approval. RoVibe then reads the place's last update date from Roblox to confirm the publish went through. |
+| **Blocked Studio** | An open dialog in Studio (such as "Auto Recovery" after a crash) is reported, and no test starts while it's there. |
+
+### Asset bank
+Save models from Studio, each with a preview taken when it's saved, sorted into collections and reusable from one project to the next. Import a whole pack in one go. The Creator Store tab searches Roblox's free assets, with their pictures, and inserts them with their scripts disabled. Agents see the same pictures through `asset_preview`.
+
+<img src="docs/media/creator-store.png" alt="Searching the Creator Store from RoVibe's asset bank" width="100%">
+
+### Safe by default
+| | |
+|---|---|
+| **Changes** | Everything agents changed since your last review, committed or not, with the agent responsible and the diff. Undo any file on its own. |
+| **History** | Every project is a git repository. A checkpoint is created before any "No confirmations" session, and History goes back to an earlier state without losing anything. |
+| **Protected project** | For a live game: Studio shows each change before applying it, and an agent needs your approval to connect the sync, just as it does to publish. |
+| **Local only** | Everything listens on `127.0.0.1`. The API and the MCP server need a token, and the plugin's endpoint refuses browsers. |
+
+### MCP tools
+Every agent session gets the `rovibe` MCP server automatically.
+
+| Area | Tools |
+|---|---|
+| Read the game | `get_tree`, `get_instance`, `search`, `get_console`, `studio_status` |
+| Change it | `run_luau` (edit, server or client), `sync_connect`, `check_code` |
+| Play it | `playtest`, `play_move`, `play_input`, `screenshot` |
+| Assets | `asset_search`, `asset_preview`, `asset_insert`, `asset_save` |
+| Ship it | `publish` (after your approval) |
+| Teamwork | `agents_status`, `claim_files`, `release_files` |
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph App["RoVibe (127.0.0.1)"]
+    UI["Window<br/>Tauri + xterm.js"] --> Server["rovibe-cli<br/>terminals · MCP · API"]
+  end
+  Server -->|ConPTY| A1["Claude Code"]
+  Server -->|ConPTY| A2["Codex"]
+  A1 -->|MCP| Server
+  A2 -->|MCP| Server
+  A1 -->|edit| Files[("Project files<br/>git repository")]
+  A2 -->|edit| Files
+  Files --> Sync["rovibe-sync<br/>(Rojo fork)"]
+  Sync -->|live sync| Studio["Roblox Studio<br/>RoVibeStudio plugin"]
+  Server <-->|WebSocket bridge| Studio
+```
 
 | Component | Role | In this repository |
 |---|---|---|
 | `rovibe` | The desktop app | `app/` (window) and `ui/` (interface), on top of `crates/core` |
 | `rovibe-cli` | The server without a window, and `status` to query a running RoVibe | `crates/core/src/main.rs` |
 | `rovibe-studio` | The Roblox Studio plugin (`RoVibeStudio.rbxm`) | `vendor/sync/plugin`, tools in `crates/core/plugin` |
-| `rovibe-mcp` | The MCP server handed to every agent | `crates/core/src/mcp.rs` |
+| `rovibe-mcp` | The MCP server given to every agent | `crates/core/src/mcp.rs` |
 | `rovibe-sync` | The sync engine, based on Rojo | `vendor/sync` |
 
-- **Several sessions**: each agent runs in its own terminal, side by side, in the project folder.
-- **RoVibe Sync**: a fork of [Rojo](https://github.com/rojo-rbx/rojo) (`vendor/sync`). Code lives in files, Studio mirrors it live.
-- **Studio bridge**: the plugin keeps a WebSocket open to the app. A tool call is one local round trip, with no polling.
-- **MCP `rovibe`** (server `rovibe-mcp`): `run_luau` (edit, server and client), `get_tree`, `search`, `get_instance`, `get_console`, `check_code`, `publish`, `playtest`, `play_move`, `play_input`, `screenshot`, `asset_search`, `asset_preview`, `asset_insert`, `asset_save`, `sync_connect`, `studio_status`. Every agent session gets it automatically.
-- **Asset bank**: models saved from Studio, each with a preview pictured when it is saved, in `Documents\RoVibe\Banque`, reusable from one project to the next and sorted in collections. A pack (a folder of `.rbxm` or `.rbxmx` files) is imported in one go, its sub-folders becoming collections; missing previews are then made in Studio. The Creator Store tab searches Roblox's free assets with their pictures and inserts them in Studio; an agent sees the same pictures with `asset_preview`. Scripts of a Store asset are disabled on insertion.
-- **Coordination between agents**: a file an agent changed is reserved for it for 10 minutes; another agent, Claude Code or Codex, that tries to edit it is refused and told who holds it. The same goes for a shell command that would write to that file, and for those that rewrite the whole folder (`git reset --hard`, `git stash`, `git checkout .`) while another agent holds anything. Agents can also reserve ahead (`claim_files`) and see who is doing what (`agents_status`).
-- **Own branch**: with this option, each new agent works in a copy of the project, on its own git branch. Several agents can then rewrite the same files; you read each one's work from its pane (files and diff), then merge it, and a merge that conflicts is undone, naming the files involved. Studio shows the project; an agent brings its branch into Studio with `sync_connect`.
-- **Notifications**: Windows tells you when an agent needs you or is done, if the window isn't in front (configurable).
-- **Layout**: panes are reordered by dragging their header, and shown all side by side or one at a time with tabs. Interrupted sessions wait in a strip of their own.
-- **Protected project**: for a live game. Studio shows the changes before each sync instead of applying them, and an agent needs your approval in the app before connecting the sync, as it does to publish.
-- **Background**: the agents run in a server apart from the window. Closing the window while sessions run offers to let them carry on; a window that crashes or is updated finds them again. The app stays by the clock; its icon, or starting it again, brings the window back. With no session running, closing quits.
-- **Getting started**: a checklist of what RoVibe needs on the PC (Claude Code or Codex, git, the Studio plugin…), what is in place and how to get the rest. It opens on first launch.
-- **Language**: the interface comes in French and English; it follows the system's language, or the one chosen in the settings. Server messages and tool descriptions remain in French.
-- **Agent status**: each pane says whether the agent is working, waiting for an answer or done; the taskbar button flashes when one is waiting.
-- **Persistent sessions**: Claude Code sessions open when the app closes are offered again at the next launch; “Resume” restarts the agent on its conversation.
-- **Changes**: the list of what agents changed since your last review, committed or not, with the agent responsible and the diff; each file can be undone on its own, “Accept all” starts again from the current state.
-- **Settings**: default model for Claude Code and Codex, folder for new projects, Studio's publish shortcut. The model can also be chosen per session.
-- **Journal**: `%USERPROFILE%\.rovibe\rovibe.log`, readable from the app, records sessions, sync, Studio connections, failed tools and updates.
-- **Blocked Studio**: a dialog open in Studio (for instance “Auto Recovery” after a crash) is reported in the app and by `studio_status`, and tests are not started while it is there.
-- **Prompts**: one prompt goes to several agents at once; frequent prompts are saved in the project (`.rovibe/consignes.json`).
-- **Importing an existing game**: “New project” can start from the scripts of the place open in Studio. Only scripts become files; the map and the interfaces stay in the place and the sync leaves them alone.
-- **History**: each project is a git repository. A checkpoint is created before any “No confirmations” session, and “History” goes back to an earlier state without losing anything.
-- **Tools updated without restarting Studio**: the plugin only holds the transport; the app sends it the tools' code (`crates/core/plugin/methods.luau`) on every connection.
-- **Playing the test**: during a Play test, the agent moves the character (pathfinding) and sends real keys and clicks, including on an interface element named by its path. Right click, wheel, dragging and turning the camera too. All of it happens in the background: Studio doesn't come forward, your keyboard and mouse stay yours.
-- **Screenshot**: the app pictures Studio's 3D view, even in the background, and can frame an instance first.
-- **Code checking**: `check_code` runs selene and luau-lsp (`scripts\get-tools.ps1` installs them in `dist\RoVibe\tools`). After each file a Claude Code agent writes, selene's errors are sent straight back to it.
-- **Publishing**: the `publish` tool and the “Publish” button send Studio its publish shortcut (Alt+P), without bringing it forward. An agent can only publish after approval in the app. The publication is then confirmed by reading the place's last-updated date back from Roblox.
+## Quick start
 
-## Install
+1. **Install** with the installer from the [latest release](https://github.com/aaldersondev/rovibe/releases/latest) (Windows 10/11, 64-bit). It isn't code-signed yet, so Windows shows "Unknown publisher". After that, the app updates itself.
+2. **Getting started** opens on first launch and lists what's missing: Claude Code or Codex, git, the Studio plugin. Install the plugin from there, then restart Roblox Studio.
+3. **New project**: start from a template, from a folder that already holds a `default.project.json`, or from the scripts of the place open in Studio.
+4. **Connect**: open the place in Studio and click Connect.
+5. **Start agents** with Claude Code or Codex, and give them something to build.
 
-Download the installer from the [latest release](https://github.com/aaldersondev/rovibe/releases/latest) (Windows 10/11, 64-bit). It is not signed: Windows shows “Unknown publisher”. The app then updates itself.
+`claude` and `codex` must be on the PATH. The first time Codex runs in a project, it asks you to approve the hooks RoVibe put in `.codex/hooks.json`: they report its status and make it respect the file locks.
 
-## Build
+The interface is in English and French. It follows the system language, or the one chosen in Settings.
 
-Requirements: Rust, Node 22, the Visual Studio Build Tools.
+## Build from source
+
+Requirements: Rust, Node 22 and the Visual Studio Build Tools.
 
 ```powershell
 .\scripts\build.ps1            # portable app in dist\RoVibe
-.\scripts\release.ps1 0.7.0    # signed installer + latest.json in dist\release\0.7.0
+.\scripts\release.ps1 0.9.0    # signed installer + latest.json in dist\release\0.9.0
 ```
 
-The installer (NSIS, per user, no administrator rights) puts the app in `%LOCALAPPDATA%\RoVibe`; settings are in `%USERPROFILE%\.rovibe`.
+For development without the native window, run `cargo run -p rovibe-core`, then open `http://127.0.0.1:34880`.
 
-### Updates
-
-On start, the app reads `latest.json` from the latest GitHub release of the repository named in `app/tauri.conf.json`. If a newer version exists, a banner offers to install it. Only the window restarts: the server that runs the agents is a process of its own, started from a copy kept with the settings, so sessions carry on through the update. The new version takes over once they are closed, or at once on request. Each installer is signed with the key `%USERPROFILE%\.tauri\rovibe.key`: without it, installed copies accept no update. Keep it out of the repository, and back it up.
-
-### Releases built by GitHub
-
-Pushing a tag `v1.2.3` runs `.github/workflows/release.yml`: it builds the installer of that version and publishes it with `latest.json`. It needs the update key as the repository secret `TAURI_SIGNING_PRIVATE_KEY`; without it, the tag builds nothing. Run by hand from the Actions tab, the workflow only tries the build and keeps the installer as an artifact.
-
-```powershell
-Get-Content $env:USERPROFILE\.tauri\rovibe.key -Raw | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe
-git tag v0.9.0; git push origin v0.9.0
-```
-
-### Windows signing (Authenticode)
-
-The key above says nothing to Windows: without a code-signing certificate, the installer opens on “Unknown publisher” and SmartScreen asks for confirmation. With a certificate, `release.ps1` signs the app, the sync server and the installer (`scripts\sign.ps1`, which calls `signtool` from the Windows SDK) as soon as one of these variables is set:
-
-```powershell
-$env:ROVIBE_SIGN_THUMBPRINT = "<SHA-1 thumbprint>"   # certificate in the Windows store: USB token or cloud HSM
-# or, for a certificate that is still a file:
-$env:ROVIBE_SIGN_PFX = "C:\path\certificate.pfx"; $env:ROVIBE_SIGN_PFX_PASSWORD = "..."
-.\scripts\release.ps1 0.7.0
-```
-
-A certificate is bought from an authority (Certum, Sectigo, DigiCert…) or rented through Azure Trusted Signing; an OV certificate only makes the SmartScreen warning go away once reputation is earned, an EV one at once. With no variable set, the release is built unsigned.
-
-### Isolation
-
-`.\scripts\setup-isolation.ps1` creates the WSL distribution “rovibe” once. A session started with “Isolated” runs there: only the project folder is mounted, no Windows drive is visible, Windows programs can't be started and the agent's user can't become root. Its network is closed: the agent's user only reaches the distribution's own loopback, where the relay to the app and a proxy are waiting; the proxy only opens HTTPS tunnels to the model's API (`anthropic.com`, `claude.ai`, `claude.com`, `openai.com`, `chatgpt.com`) and to the hosts added in the settings (for instance `github.com`). No direct access, no DNS; each refused host is noted once in the journal. The “Open” setting gives the whole internet back. Codex runs there too, through the same door; until it is installed in the distribution, an “Isolated” Codex session keeps its own sandbox (`--sandbox workspace-write`). Each agent signs in to its account once, in its terminal. If the distribution was created by an earlier version, run the script again.
-
-## Use
-
-1. Start `RoVibe.exe`; “Getting started” lists what is missing. Install the Studio plugin from there and restart Roblox Studio.
-2. “New project”: creates a template folder, or takes over a folder that already holds a `default.project.json`.
-3. Open the place in Studio, then “Connect”. The sync applies without confirmation unless the project is protected.
-4. Start agents with “Claude Code” or “Codex”.
-
-`claude` and `codex` must be in the PATH. The first time Codex runs in a project, it asks you to approve the hooks RoVibe put there (`.codex/hooks.json`): that is how it reports its status and honours the locks. On Windows as in the isolated distribution, those hooks call `rovibe-hook`, a small program the app puts on the PATH of its sessions. The app includes no model: each agent uses your own subscription.
-
-## Tests
+<details>
+<summary><b>Tests</b></summary>
 
 ```powershell
 cd ui; npm run build; cd ..     # the server embeds the interface
@@ -110,22 +142,55 @@ cargo test -p rovibe-core
 cd ui; npx playwright install chromium; npm test   # the interface, in a real browser
 ```
 
-Tests cover what can lose work: importing a place, file locks between agents, going back in git, merging an agent's branch, choosing the Studio to act on, reading the code checkers, and key codes. The interface tests start a server of their own, on another port and with an empty settings folder, and replay what once broke: terminals overflowing their pane, panes resizing each other, a refused setting blocking the next ones, French left in the English interface. Everything runs on every push (`.github/workflows/ci.yml`).
+The tests cover what could lose work: importing a place, file locks between agents, going back in git, merging an agent's branch, choosing which Studio to act on, reading the code checkers' output, and key codes. The interface tests start their own server, on another port with an empty settings folder, and replay bugs that once happened: terminals overflowing their pane, panes resizing each other, a refused setting blocking the next ones, French left in the English interface. Everything runs on every push.
+</details>
 
-## Architecture
+<details>
+<summary><b>Updates and releases</b></summary>
 
-| Folder | Role |
+On start, the app reads `latest.json` from the latest GitHub release. If a newer version exists, a banner offers to install it. Only the window restarts: the server that runs the agents keeps its sessions, and the new version takes over once they're closed, or right away if you ask. Each installer is signed with the key `%USERPROFILE%\.tauri\rovibe.key`, and installed copies refuse any update without that signature. Keep the key out of the repository, and back it up.
+
+Pushing a tag `v1.2.3` runs `.github/workflows/release.yml`, which builds that version and publishes it with `latest.json`. It needs the update key as the repository secret `TAURI_SIGNING_PRIVATE_KEY`. Without the secret, the tag builds nothing. Run by hand from the Actions tab, the workflow only tries the build and keeps the installer as an artifact.
+
+```powershell
+Get-Content $env:USERPROFILE\.tauri\rovibe.key -Raw | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo aaldersondev/rovibe
+git tag v0.9.0; git push origin v0.9.0
+```
+</details>
+
+<details>
+<summary><b>Windows code signing (Authenticode)</b></summary>
+
+Windows doesn't know about the update key. Without a code-signing certificate, the installer shows "Unknown publisher" and SmartScreen asks for confirmation. With a certificate, `release.ps1` signs the app, the sync server and the installer (through `scripts\sign.ps1`, which calls `signtool` from the Windows SDK) as soon as one of these variables is set:
+
+```powershell
+$env:ROVIBE_SIGN_THUMBPRINT = "<SHA-1 thumbprint>"   # certificate in the Windows store: USB token or cloud HSM
+# or, for a certificate that is still a file:
+$env:ROVIBE_SIGN_PFX = "C:\path\certificate.pfx"; $env:ROVIBE_SIGN_PFX_PASSWORD = "..."
+.\scripts\release.ps1 0.9.0
+```
+
+Certificates are sold by certificate authorities (Certum, Sectigo, DigiCert…) or rented through Azure Trusted Signing. With an OV certificate, the SmartScreen warning only goes away once the app has built a reputation; with an EV certificate, it goes away right away. With no variable set, the release is built unsigned.
+</details>
+
+<details>
+<summary><b>Isolated agents (WSL)</b></summary>
+
+`.\scripts\setup-isolation.ps1` creates the WSL distribution once. A session started as "Isolated" runs there. Only the project folder is mounted: no Windows drive is visible, Windows programs can't be started, and the agent's user can't become root. Its network is closed too. The agent's user can only reach the distribution's own loopback, where a relay to the app and a proxy wait. The proxy only opens HTTPS tunnels to the model's API (`anthropic.com`, `claude.ai`, `claude.com`, `openai.com`, `chatgpt.com`) and to the hosts you add in Settings, such as `github.com`. There is no DNS and no direct access, and each refused host is logged once. The "Open" setting gives back the whole internet. Each agent signs in to its account once, in its terminal. If the distribution was created by an earlier version, run the script again.
+</details>
+
+<details>
+<summary><b>Where things are</b></summary>
+
+| Path | What |
 |---|---|
-| `crates/core` | Local server (Rust, axum): ConPTY terminals, Studio bridge, MCP over HTTP, API and embedded UI |
-| `app` | Tauri shell: a native window on the local server |
-| `ui` | Interface (TypeScript, xterm.js) |
-| `vendor/sync` | Fork of Rojo; the bridge's transport is in `plugin/src/Bridge.lua` |
-| `crates/core/plugin` | The Studio side of each tool, sent to the plugin by the app |
+| `%LOCALAPPDATA%\RoVibe` | The installed app (per user, no administrator rights) |
+| `%USERPROFILE%\.rovibe` | Settings, token, registered projects, journal (`rovibe.log`) |
+| `Documents\RoVibe` | New projects and the asset bank (`Banque`) |
+| `<project>\.rovibe` | Saved prompts of the project |
+| Port 34880 | The app; each project's sync uses 34873 and up |
+</details>
 
-Everything listens on `127.0.0.1` only. Port 34880 for the app, 34873 and up for each project's sync. The API and the MCP require a token; the plugin's entry point refuses browsers.
+## License
 
-Development without a native window: `cargo run -p rovibe-core`, then open `http://127.0.0.1:34880`.
-
-## Licences
-
-RoVibe's code is under the MIT licence. `vendor/sync` remains under MPL-2.0: its modified files must be redistributed with their sources.
+RoVibe's code is under the [MIT license](LICENSE). `vendor/sync` stays under MPL-2.0, as a fork of Rojo: its modified files must be redistributed with their source.
