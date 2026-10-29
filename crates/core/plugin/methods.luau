@@ -382,15 +382,109 @@ return function(env)
 			error("A playtest is already running", 0)
 		end
 
-		-- Execute*ModeAsync only returns when the test ends, so it runs detached.
+		local players = math.clamp(math.floor(tonumber(params.players) or 1), 1, 8)
+		-- Execute*Async only returns when the test ends, so it runs detached.
 		task.spawn(function()
 			if params.mode == "run" then
 				StudioTestService:ExecuteRunModeAsync({})
+			elseif players > 1 then
+				StudioTestService:ExecuteMultiplayerTestAsync(players, {})
 			else
 				StudioTestService:ExecutePlayModeAsync({})
 			end
 		end)
 		return "started"
+	end
+
+	-- How the game runs, measured over a few seconds: frame rate and frame
+	-- times from Heartbeat, the engine's own step times, memory and what the
+	-- scene holds. In the client during a test, it is what a player feels.
+	function methods.performance_check(params)
+		local Stats = game:GetService("Stats")
+		local duration = math.clamp(tonumber(params.duration) or 3, 0.5, 8)
+		local read = function(name)
+			local ok, value = pcall(function()
+				return (Stats :: any)[name]
+			end)
+			return if ok and type(value) == "number" then value else nil
+		end
+
+		local frames = {}
+		local connection = RunService.Heartbeat:Connect(function(step)
+			table.insert(frames, step)
+		end)
+		local memoryStart = Stats:GetTotalMemoryUsageMb()
+		local memoryPeak = memoryStart
+		local heartbeat, physics, samples = 0, 0, 0
+		local started = os.clock()
+		while os.clock() - started < duration do
+			task.wait(0.25)
+			samples += 1
+			heartbeat += read("HeartbeatTime") or 0
+			physics += read("PhysicsStepTime") or 0
+			memoryPeak = math.max(memoryPeak, Stats:GetTotalMemoryUsageMb())
+		end
+		connection:Disconnect()
+		local elapsed = os.clock() - started
+		local memoryEnd = Stats:GetTotalMemoryUsageMb()
+
+		local context = if RunService:IsEdit() then "edit" elseif RunService:IsServer() then "server" else "client"
+		local lines = { string.format("Mesuré %.1f s dans le DataModel %s.", elapsed, context) }
+		if #frames == 0 then
+			table.insert(lines, "Aucune image : le jeu ne tourne pas (Studio réduit ou en pause ?).")
+		else
+			local sorted = table.clone(frames)
+			table.sort(sorted)
+			local total = 0
+			for _, step in frames do
+				total += step
+			end
+			local at = function(share)
+				return sorted[math.clamp(math.ceil(#sorted * share), 1, #sorted)] * 1000
+			end
+			table.insert(lines, string.format(
+				"Images : %d, soit %.1f par seconde. Temps d'image : moyen %.1f ms, médian %.1f ms, p95 %.1f ms, pire %.1f ms.",
+				#frames, #frames / elapsed, total / #frames * 1000, at(0.5), at(0.95), sorted[#sorted] * 1000
+			))
+			local slow = 0
+			for _, step in frames do
+				if step > 1 / 30 then
+					slow += 1
+				end
+			end
+			if slow > 0 then
+				table.insert(lines, string.format("%d image(s) au-dessus de 33 ms (sous 30 images par seconde).", slow))
+			end
+		end
+		-- The editor reports no step times: a line of zeros would mislead.
+		if samples > 0 and heartbeat + physics > 0 then
+			table.insert(lines, string.format(
+				"Moteur : Heartbeat %.2f ms, physique %.2f ms en moyenne.",
+				heartbeat / samples * 1000, physics / samples * 1000
+			))
+		end
+		table.insert(lines, string.format(
+			"Mémoire : %.0f Mo au début, %.0f Mo à la fin, %.0f Mo au plus haut.",
+			memoryStart, memoryEnd, memoryPeak
+		))
+		local scene = {}
+		for _, item in {
+			{ "InstanceCount", "instances" },
+			{ "PrimitivesCount", "pièces physiques" },
+			{ "MovingPrimitivesCount", "en mouvement" },
+			{ "ContactsCount", "contacts" },
+			{ "SceneDrawcallCount", "appels de dessin" },
+			{ "SceneTriangleCount", "triangles affichés" },
+		} do
+			local value = read(item[1])
+			if value and value > 0 then
+				table.insert(scene, string.format("%d %s", value, item[2]))
+			end
+		end
+		if #scene > 0 then
+			table.insert(lines, "Scène : " .. table.concat(scene, ", ") .. ".")
+		end
+		return table.concat(lines, "\n")
 	end
 
 	local function collectInstances(roots)

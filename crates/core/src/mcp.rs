@@ -124,7 +124,8 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["start", "stop"] },
-                    "mode": { "type": "string", "enum": ["play", "run"], "description": "play = avec un joueur (défaut), run = serveur seul." }
+                    "mode": { "type": "string", "enum": ["play", "run"], "description": "play = avec un joueur (défaut), run = serveur seul." },
+                    "players": { "type": "number", "description": "Mode play : nombre de joueurs, 1 à 8, défaut 1. À partir de 2, Studio ouvre un serveur et une fenêtre par joueur ; les outils en contexte client visent le premier." }
                 },
                 "required": ["action"]
             }
@@ -251,6 +252,12 @@ fn tools() -> Value {
                     "scenario": { "type": "string", "description": "Nom d'un scénario enregistré dans `.rovibe/tests/` (sans extension). Les autres champs passés le complètent ou le remplacent." },
                     "save_as": { "type": "string", "description": "Enregistre ce scénario sous ce nom pour le rejouer plus tard." },
                     "mode": { "type": "string", "enum": ["play", "run"], "description": "play = avec un joueur (défaut), run = serveur seul." },
+                    "players": { "type": "number", "description": "Mode play : nombre de joueurs, 1 à 8, défaut 1. Les étapes côté client se jouent dans le premier." },
+                    "steps": {
+                        "type": "array",
+                        "items": { "type": "object" },
+                        "description": "Parcours joué dans l'ordre, après setup_luau et walk_to, avant assert_luau. Chaque étape a un champ `do` : `{\"do\":\"walk\",\"to\":[x,y,z] ou chemin}`, `{\"do\":\"input\",\"steps\":[…]}` (mêmes actions que play_input), `{\"do\":\"wait\",\"seconds\":2}`, `{\"do\":\"luau\",\"code\":\"…\",\"context\":\"server\"}`, `{\"do\":\"assert\",\"code\":\"…\",\"context\":\"server\"}` (FAIL comme assert_luau), `{\"do\":\"screenshot\"}`, `{\"do\":\"check\",\"tool\":\"ui_check\"}`, `{\"do\":\"performance\",\"duration\":3}`. Une étape qui échoue rend le verdict FAIL ; les suivantes sont tout de même jouées."
+                    },
                     "setup_luau": { "type": "string", "description": "Luau exécuté dès que le test est prêt : téléporter le joueur, faire apparaître un ennemi, donner un objet. Une erreur = FAIL." },
                     "setup_context": { "type": "string", "enum": ["server", "client"], "description": "Défaut server." },
                     "walk_to": { "description": "Après setup_luau, fait marcher le personnage : `[x, y, z]` ou chemin d'une instance. Ne pas arriver = FAIL." },
@@ -293,6 +300,17 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": { "path": { "type": "string" }, "context": context.clone() },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": "performance_check",
+            "description": "Mesure le jeu pendant quelques secondes : images par seconde, temps d'image moyen, médian, p95 et pire, images sous 30 par seconde, temps du Heartbeat et de la physique, mémoire (début, fin, pic), et ce que contient la scène (instances, pièces physiques, appels de dessin, triangles). Pendant un test Play, mesure par défaut le client, ce que ressent le joueur ; `context: \"server\"` pour le serveur. À lancer avant et après un changement qui peut coûter cher, pour comparer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "duration": { "type": "number", "description": "Secondes de mesure, 0,5 à 8, défaut 3." },
+                    "context": context.clone()
+                }
             }
         },
         {
@@ -1540,9 +1558,16 @@ fn test_console(state: &Shared, project: &Project, context: &str, after: u64) ->
         .filter(|entry| entry.seq > after && entry.context == context)
         .filter(|entry| project.place_id.is_none_or(|place| entry.place_id == place))
         .collect();
-    let errors = lines.iter().filter(|entry| entry.level == "error").count();
+    // Studio loads the user's plugins in every window of a test with several
+    // players; their failures are Studio's business, not the game's.
+    let from_plugins = |entry: &&&crate::state::LogEntry| entry.message.starts_with("Unable to load plugin icon");
+    let errors = lines.iter().filter(|entry| entry.level == "error" && !from_plugins(entry)).count();
+    let ignored = lines.iter().filter(|entry| entry.level == "error" && from_plugins(entry)).count();
     let shown = lines.len().saturating_sub(40);
     let mut text = format!("Console {context} : {} ligne(s), {errors} erreur(s)", lines.len());
+    if ignored > 0 {
+        text.push_str(&format!(", plus {ignored} erreur(s) de plugins Studio non comptées"));
+    }
     if shown > 0 {
         text.push_str(&format!(" ({shown} plus anciennes omises)"));
     }
@@ -1550,6 +1575,94 @@ fn test_console(state: &Shared, project: &Project, context: &str, after: u64) ->
         text.push_str(&format!("\n  {}: {}", entry.level, entry.message));
     }
     (errors, text)
+}
+
+/// Walks the first player's character; not arriving fails the check.
+async fn walk(state: &Shared, project: &Project, report: &mut Report, label: &str, to: &Value, play: bool) {
+    if !play {
+        report.failures.push(format!("{label} demande le mode play"));
+        return;
+    }
+    match studio::pick(state, Some(project), "client") {
+        Err(error) => report.failures.push(format!("{label} : {error}")),
+        Ok(client) => match client
+            .call("play_move", json!({ "to": to, "timeout": 20 }), Duration::from_secs(30))
+            .await
+        {
+            Err(error) => report.failures.push(format!("{label} a échoué ({error})")),
+            Ok(moved) => {
+                if moved["arrived"] != true {
+                    report.failures.push(format!("{label} : le personnage n'est pas arrivé à destination"));
+                }
+                report.sections.push(format!("Marche ({label}) : {}", moved["text"].as_str().unwrap_or_default()));
+            }
+        },
+    }
+}
+
+/// A diagnostic run during the test: its findings go to the report and
+/// don't change the verdict, unless it can't run at all.
+async fn diagnostic(state: &Shared, project: &Project, report: &mut Report, check: &Value, play: bool) {
+    let tool = check["tool"].as_str().unwrap_or_default();
+    if !matches!(tool, "ui_check" | "rig_check" | "asset_check" | "performance_check") {
+        report
+            .failures
+            .push(format!("diagnostic inconnu : {tool:?} (ui_check, rig_check, asset_check ou performance_check)"));
+        return;
+    }
+    let seen_by_player = matches!(tool, "ui_check" | "performance_check") && play;
+    let context = check["context"].as_str().unwrap_or(if seen_by_player { "client" } else { "server" });
+    let outcome = match studio::pick(state, Some(project), context) {
+        Ok(studio) => studio.call(tool, check.clone(), Duration::from_secs(30)).await.map(as_text),
+        Err(error) => Err(error),
+    };
+    match outcome {
+        Ok(text) => report.sections.push(format!("{tool} ({context}) :\n{text}")),
+        Err(error) => report.failures.push(format!("{tool} n'a pas pu s'exécuter ({error})")),
+    }
+}
+
+/// One step of a scenario's `steps`, recorded in the report. A failed step
+/// fails the check, and the next ones still run: the report then says
+/// everything that is wrong at once. Gives back the pictures it took.
+async fn scenario_step(state: &Shared, project: &Project, report: &mut Report, index: usize, step: &Value, play: bool) -> Vec<Value> {
+    let action = step["do"].as_str().unwrap_or_default();
+    let label = format!("étape {} ({action})", index + 1);
+    match action {
+        "walk" => walk(state, project, report, &label, &step["to"], play).await,
+        "input" => match play_input(state, Some(project), step).await {
+            Ok(text) => report.sections.push(format!("{label} :\n{text}")),
+            Err(error) => report.failures.push(format!("{label} a échoué ({error})")),
+        },
+        "wait" => {
+            let seconds = step["seconds"].as_f64().unwrap_or(1.0).clamp(0.0, 30.0);
+            tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
+        }
+        "luau" | "assert" => match step["code"].as_str() {
+            None => report.failures.push(format!("{label} : `code` manque")),
+            Some(code) => {
+                let context = step["context"].as_str().unwrap_or("server");
+                check_step(state, project, report, &label, code, context, action == "assert").await;
+            }
+        },
+        "screenshot" => match take_screenshot(state, Some(project), step).await {
+            Ok(content) => {
+                report.sections.push(format!("{label} : capture jointe au rapport."));
+                return content.into_iter().filter(|item| item["type"] == "image").collect();
+            }
+            Err(error) => report.sections.push(format!("{label} : capture impossible ({error})")),
+        },
+        "check" => diagnostic(state, project, report, step, play).await,
+        "performance" => {
+            let mut measure = step.clone();
+            measure["tool"] = json!("performance_check");
+            diagnostic(state, project, report, &measure, play).await;
+        }
+        other => report.failures.push(format!(
+            "{label} : action inconnue {other:?} (walk, input, wait, luau, assert, screenshot, check, performance)"
+        )),
+    }
+    Vec::new()
 }
 
 /// `playtest_check`: a fresh test, run start to finish, with a verdict.
@@ -1591,8 +1704,12 @@ async fn run_check(state: &Shared, project: &Project, session: Option<&str>, fol
 
     let after = state.logs.lock().unwrap().next_seq;
     let started = std::time::Instant::now();
-    edit.call("playtest", json!({ "action": "start", "mode": if play { "play" } else { "run" } }), Duration::from_secs(15))
-        .await?;
+    edit.call(
+        "playtest",
+        json!({ "action": "start", "mode": if play { "play" } else { "run" }, "players": spec["players"] }),
+        Duration::from_secs(15),
+    )
+    .await?;
     if let Some(session) = session {
         state.drives.set_playing(&project.id, session, true);
     }
@@ -1607,25 +1724,11 @@ async fn run_check(state: &Shared, project: &Project, session: Option<&str>, fol
         }
 
         if !spec["walk_to"].is_null() {
-            if !play {
-                report.failures.push("walk_to demande le mode play".into());
-            } else {
-                match studio::pick(state, Some(project), "client") {
-                    Err(error) => report.failures.push(format!("walk_to : {error}")),
-                    Ok(client) => match client
-                        .call("play_move", json!({ "to": spec["walk_to"], "timeout": 20 }), Duration::from_secs(30))
-                        .await
-                    {
-                        Err(error) => report.failures.push(format!("walk_to a échoué ({error})")),
-                        Ok(moved) => {
-                            if moved["arrived"] != true {
-                                report.failures.push("le personnage n'est pas arrivé à destination".into());
-                            }
-                            report.sections.push(format!("Marche : {}", moved["text"].as_str().unwrap_or_default()));
-                        }
-                    },
-                }
-            }
+            walk(state, project, &mut report, "walk_to", &spec["walk_to"], play).await;
+        }
+
+        for (index, step) in spec["steps"].as_array().into_iter().flatten().enumerate() {
+            images.extend(scenario_step(state, project, &mut report, index, step, play).await);
         }
 
         let duration = spec["duration"].as_f64().unwrap_or(5.0).clamp(0.0, 60.0);
@@ -1640,21 +1743,7 @@ async fn run_check(state: &Shared, project: &Project, session: Option<&str>, fol
         }
 
         for check in spec["checks"].as_array().into_iter().flatten() {
-            let tool = check["tool"].as_str().unwrap_or_default();
-            if !matches!(tool, "ui_check" | "rig_check" | "asset_check") {
-                report.failures.push(format!("diagnostic inconnu : {tool:?} (ui_check, rig_check ou asset_check)"));
-                continue;
-            }
-            let fallback = if tool == "ui_check" { "client" } else { "server" };
-            let context = check["context"].as_str().unwrap_or(fallback);
-            let outcome = match studio::pick(state, Some(project), context) {
-                Ok(studio) => studio.call(tool, check.clone(), Duration::from_secs(30)).await.map(as_text),
-                Err(error) => Err(error),
-            };
-            match outcome {
-                Ok(text) => report.sections.push(format!("{tool} ({context}) :\n{text}")),
-                Err(error) => report.failures.push(format!("{tool} n'a pas pu s'exécuter ({error})")),
-            }
+            diagnostic(state, project, &mut report, check, play).await;
         }
 
         // The game's own errors, read once everything above had its chance
@@ -1675,7 +1764,7 @@ async fn run_check(state: &Shared, project: &Project, session: Option<&str>, fol
 
         if play && spec["screenshot"] != false {
             match take_screenshot(state, Some(project), &json!({})).await {
-                Ok(content) => images = content,
+                Ok(content) => images.extend(content),
                 Err(error) => report.sections.push(format!("Capture impossible : {error}")),
             }
         }
@@ -1898,6 +1987,14 @@ async fn call_tool(
         "selection" => {
             let studio = studio::pick(state, project, "edit")?;
             studio.call("selection", args.clone(), Duration::from_secs(10)).await.map(as_text)
+        }
+        "performance_check" => {
+            // During a Play test, what counts is what the player sees.
+            let mut args = args.clone();
+            if args["context"].is_null() && studio::pick(state, project, "client").is_ok() {
+                args["context"] = json!("client");
+            }
+            forward(state, project, name, &args).await
         }
         "ui_check" => {
             // During a Play test the interface players see is the client's.

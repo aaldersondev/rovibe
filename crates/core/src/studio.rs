@@ -141,6 +141,21 @@ pub fn pick(state: &Shared, project: Option<&Project>, context: &str) -> Result<
         }
     }
 
+    // A test with several players has one client per player, all of the same
+    // test as long as a single server runs: the first one to join speaks for
+    // them, as its window is the one Studio puts first.
+    if context == "client" && candidates.len() > 1 {
+        let servers = studios
+            .values()
+            .filter(|studio| studio.context == "server" && !foreign(studio))
+            .filter(|studio| candidates.iter().any(|client| client.place_id == studio.place_id))
+            .count();
+        let same_place = candidates.iter().all(|client| client.place_id == candidates[0].place_id);
+        if servers == 1 && same_place {
+            return Ok(candidates.iter().min_by_key(|client| client.id).map(|client| (*client).clone()).unwrap());
+        }
+    }
+
     let bound_elsewhere = project.is_some_and(|project| project.is_bound())
         && candidates.is_empty()
         && in_context().next().is_some();
