@@ -438,6 +438,7 @@ fn build_command(
     launch: &Launch,
     agent_id: Option<&str>,
 ) -> Result<CommandBuilder, String> {
+    crate::programs::complete_path();
     let locate = |name: &str| {
         which::which(name).map_err(|_| format!("`{name}` est introuvable dans le PATH"))
     };

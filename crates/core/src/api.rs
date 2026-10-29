@@ -93,6 +93,7 @@ fn installed() -> Installed {
             return known;
         }
     }
+    crate::programs::complete_path();
     let (selene, luau_lsp) = crate::lint::available();
     let found = Installed {
         claude: which::which("claude").is_ok(),

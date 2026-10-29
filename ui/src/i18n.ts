@@ -269,10 +269,10 @@ const EXACT: Record<string, string> = {
   "Tout ce qu'il faut est en place. Le reste est facultatif.": "Everything required is in place. The rest is optional.",
   "Voici ce qu'il reste à mettre en place pour que les agents puissent travailler sur ton jeu.":
     "Here is what still has to be set up before agents can work on your game.",
-  "Installe-le avec « npm install -g @anthropic-ai/claude-code », connecte-toi une fois en lançant « claude » dans un terminal, puis relance RoVibe.":
-    "Install it with “npm install -g @anthropic-ai/claude-code”, sign in once by running “claude” in a terminal, then restart RoVibe.",
-  "Facultatif. Installe-le avec « npm install -g @openai/codex », puis relance RoVibe.":
-    "Optional. Install it with “npm install -g @openai/codex”, then restart RoVibe.",
+  "Installe-le avec « npm install -g @anthropic-ai/claude-code » ou son installeur, puis connecte-toi une fois en lançant « claude » dans un terminal. RoVibe le voit dans les secondes qui suivent.":
+    "Install it with “npm install -g @anthropic-ai/claude-code” or its installer, then sign in once by running “claude” in a terminal. RoVibe sees it within seconds.",
+  "Facultatif. Installe-le avec « npm install -g @openai/codex » : RoVibe le voit dans les secondes qui suivent.":
+    "Optional. Install it with “npm install -g @openai/codex”: RoVibe sees it within seconds.",
   "Sert à l'historique, à la relecture des changements et aux branches à part. À installer depuis git-scm.com.":
     "Needed for history, change review and own branches. Install it from git-scm.com.",
   "Moteur de synchro": "Sync engine",

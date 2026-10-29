@@ -20,6 +20,7 @@ mod jobs;
 mod legacy;
 mod mcp;
 mod models;
+mod programs;
 mod projects;
 mod pty;
 mod screenshot;
@@ -307,6 +308,7 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
         legacy::move_home(&projects::documents_home(), &data_dir);
     }
 
+    programs::complete_path();
     let token = load_token(&data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await

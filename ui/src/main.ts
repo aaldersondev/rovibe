@@ -1708,13 +1708,13 @@ function setupItems(current: State) {
       name: "Claude Code",
       ok: current.tools.claude,
       needed: !current.tools.codex,
-      hint: "Installe-le avec « npm install -g @anthropic-ai/claude-code », connecte-toi une fois en lançant « claude » dans un terminal, puis relance RoVibe.",
+      hint: "Installe-le avec « npm install -g @anthropic-ai/claude-code » ou son installeur, puis connecte-toi une fois en lançant « claude » dans un terminal. RoVibe le voit dans les secondes qui suivent.",
     },
     {
       name: "Codex",
       ok: current.tools.codex,
       needed: false,
-      hint: "Facultatif. Installe-le avec « npm install -g @openai/codex », puis relance RoVibe.",
+      hint: "Facultatif. Installe-le avec « npm install -g @openai/codex » : RoVibe le voit dans les secondes qui suivent.",
     },
     {
       name: "Git",
