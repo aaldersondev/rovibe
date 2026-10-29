@@ -4,7 +4,11 @@
 //! from here when none is running: closing, crashing or updating the window
 //! leaves the agents at work, and the next window finds them again.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use serde_json::{json, Value};
 use tauri::{
@@ -25,7 +29,10 @@ fn address(path: &str) -> String {
 
 /// The version of the RoVibe server listening on the port, if one is.
 async fn ping() -> Option<String> {
-    let reply: Value = reqwest::Client::new()
+    // One client for every ping: they come every 200 ms while waiting.
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let reply: Value = CLIENT
+        .get_or_init(reqwest::Client::new)
         .get(address("/api/ping"))
         .timeout(Duration::from_millis(1500))
         .send()
@@ -37,10 +44,21 @@ async fn ping() -> Option<String> {
     (reply["app"] == "rovibe").then(|| reply["version"].as_str().unwrap_or_default().to_owned())
 }
 
+/// Whether anything still holds the port. Windows doesn't refuse a
+/// connection to a closed loopback port at once: it tries again for about
+/// two seconds, which a ping would wait out. A listener, even a busy one,
+/// accepts in well under a millisecond, so a short wait tells them apart.
+async fn listening() -> bool {
+    let connect = tokio::net::TcpStream::connect(("127.0.0.1", PORT));
+    matches!(tokio::time::timeout(Duration::from_millis(250), connect).await, Ok(Ok(_)))
+}
+
 async fn wait_for_server(up: bool, limit: Duration) -> bool {
     let until = tokio::time::Instant::now() + limit;
     while tokio::time::Instant::now() < until {
-        if ping().await.is_some() == up {
+        // Up means answering as RoVibe; down means the port is free again.
+        let present = if up { ping().await.is_some() } else { listening().await };
+        if present == up {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -208,6 +226,14 @@ fn show(app: &AppHandle) {
 
 /// Stops the agents and everything else, then the window's program.
 async fn quit(app: AppHandle, server: Server) {
+    // Off the screen at once: the user is done, and the server takes a
+    // moment to let go of the port.
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    if let Some(tray) = app.tray_by_id("rovibe") {
+        let _ = tray.set_visible(false);
+    }
     server.stop().await;
     app.exit(0);
 }
