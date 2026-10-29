@@ -655,6 +655,63 @@ pub async fn session_work_diff(
     Ok(Json(json!({ "diff": diff })))
 }
 
+#[derive(Deserialize)]
+pub struct Attached {
+    name: String,
+}
+
+/// Keeps what follows the last dot only if it looks like an extension, and
+/// replaces whatever a path or a shell could trip over.
+fn attachment_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let cleaned = cleaned.trim_matches('.');
+    let cleaned = if cleaned.is_empty() { "fichier" } else { cleaned };
+    let stamp = time_stamp();
+    format!("{stamp}-{}", &cleaned[..cleaned.len().min(80)])
+}
+
+/// Hours, minutes, seconds and milliseconds: enough to keep two pastes in a
+/// row apart, short enough to read in a prompt.
+fn time_stamp() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let seconds = now.as_secs() % 86_400;
+    format!("{:02}{:02}{:02}{:03}", seconds / 3600, seconds / 60 % 60, seconds % 60, now.subsec_millis())
+}
+
+/// An image pasted or a file dropped into a session's terminal. It is saved
+/// where the agent can read it, its own folder, and the path it knows the
+/// file by is sent back to be typed into its prompt.
+pub async fn attach_file(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<Attached>,
+    body: bytes::Bytes,
+) -> ApiResult {
+    let session = state.sessions.lock().unwrap().get(&id).cloned().ok_or_else(|| fail("Session inconnue"))?;
+    let project = state.project(&session.info.project_id).ok_or_else(|| fail("Projet inconnu"))?;
+    let in_wsl = session.isolated && isolation::hosts(session.info.kind);
+    // Inside the distribution only the project is mounted, not a branch's folder.
+    let folder = match &session.worktree {
+        Some(worktree) if !in_wsl => worktree.dir.clone(),
+        _ => project.path.clone(),
+    };
+    let dir = folder.join(".rovibe").join("attachments");
+    std::fs::create_dir_all(&dir).map_err(|error| fail(error.to_string()))?;
+    // Out of the project's history, whatever the project ignores.
+    let _ = std::fs::write(dir.join(".gitignore"), "*\n");
+    let name = attachment_name(&query.name);
+    std::fs::write(dir.join(&name), &body).map_err(|error| fail(error.to_string()))?;
+    let path = if in_wsl {
+        format!("{}/.rovibe/attachments/{name}", isolation::mount_point(&project))
+    } else {
+        dir.join(&name).display().to_string()
+    };
+    Ok(Json(json!({ "path": path })))
+}
+
 pub async fn remove_session(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult {
     let removed = state.sessions.lock().unwrap().remove(&id);
     if let Some(session) = removed {

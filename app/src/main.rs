@@ -378,6 +378,9 @@ fn main() {
                 .title("RoVibe")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(720.0, 480.0)
+                // Files dropped on a terminal are the page's to take: Tauri's
+                // own handler would keep them from reaching it.
+                .disable_drag_drop_handler()
                 .build()?;
 
             // The app's place in the notification area, where it stays while

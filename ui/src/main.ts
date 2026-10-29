@@ -333,7 +333,14 @@ function createPane(session: Session): Pane {
     body,
   );
 
+  const carriesFiles = (event: DragEvent) => !dragging && !!event.dataTransfer?.types.includes("Files");
   element.addEventListener("dragover", (event) => {
+    if (carriesFiles(event)) {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      element.classList.add("drop");
+      return;
+    }
     if (!dragging || dragging === session.title) return;
     event.preventDefault();
     element.classList.add("drop");
@@ -343,7 +350,21 @@ function createPane(session: Session): Pane {
     event.preventDefault();
     element.classList.remove("drop");
     if (dragging) movePane(session.project_id, dragging, session.title);
+    else if (event.dataTransfer?.files.length) void attach(session, terminal, [...event.dataTransfer.files]);
   });
+  // A screenshot in the clipboard goes the same way as a dropped file. Text
+  // is left to xterm, which pastes it as typed.
+  body.addEventListener(
+    "paste",
+    (event) => {
+      const files = [...(event.clipboardData?.files ?? [])];
+      if (files.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void attach(session, terminal, files);
+    },
+    true,
+  );
 
   const socket = new WebSocket(socketUrl(`/ws/pty/${session.id}`));
   socket.binaryType = "arraybuffer";
@@ -437,6 +458,30 @@ function createPane(session: Session): Pane {
   };
 
   return { mount, element, terminal, socket, state: stateLabel, files: filesLabel, target };
+}
+
+/** Hands files to an agent: the server keeps them in the session's folder,
+ *  and their paths are typed into its prompt, where it opens them as it would
+ *  any file it is pointed to, images included. Nothing is sent: the user
+ *  finishes the sentence. */
+async function attach(session: Session, terminal: Terminal, files: File[]) {
+  try {
+    const paths: string[] = [];
+    for (const file of files) {
+      const response = await fetch(`/api/sessions/${session.id}/attach?name=${encodeURIComponent(file.name || "image.png")}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: file,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error ?? `Erreur ${response.status}`);
+      paths.push(/\s/.test(data.path) ? `"${data.path}"` : data.path);
+    }
+    terminal.paste(`${paths.join(" ")} `);
+    terminal.focus();
+  } catch (error) {
+    toast((error as Error).message, true);
+  }
 }
 
 async function closeSession(id: string) {

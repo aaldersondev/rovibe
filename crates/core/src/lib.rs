@@ -224,6 +224,11 @@ fn router(state: Shared) -> Router {
         .route("/api/sessions", post(api::create_session))
         .route("/api/sessions/{id}", delete(api::remove_session))
         .route("/api/sessions/{id}/merge", post(api::merge_session))
+        // Screenshots and dropped files: well past axum's 2 MB default.
+        .route(
+            "/api/sessions/{id}/attach",
+            post(api::attach_file).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/api/sessions/{id}/work", get(api::session_work))
         .route("/api/sessions/{id}/work/diff", get(api::session_work_diff))
         .route("/api/plugin/install", post(api::install_plugin))
