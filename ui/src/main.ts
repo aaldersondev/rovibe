@@ -69,6 +69,8 @@ interface State {
   sessions: Session[];
   studios: Studio[];
   tools: { claude: boolean; codex: boolean; git: boolean; sync: boolean; node: boolean };
+  /** What Codex's own picker offers this account, read from its cache. */
+  codex_models: { slug: string; name: string; description: string }[];
   checkers: { selene: boolean; luau_lsp: boolean };
   approvals: { id: number; project_id: string; requester: string; request: string }[];
   /** Version of an update waiting to be installed, if any. */
@@ -106,6 +108,8 @@ let isolated = localStorage.getItem("rovibe.isolated") === "1";
 let apart = localStorage.getItem("rovibe.apart") === "1";
 /** Model for the next Claude Code session; empty follows the settings. */
 let model = localStorage.getItem("rovibe.model") ?? "";
+/** The same for the next Codex session. */
+let codexModel = localStorage.getItem("rovibe.codexModel") ?? "";
 
 type Child = Node | string | null | false;
 
@@ -450,7 +454,7 @@ async function newSession(kind: Kind) {
       skip_permissions: skipPermissions,
       isolated,
       worktree: apart && kind !== "shell",
-      model: kind === "claude" && model ? model : null,
+      model: (kind === "claude" ? model : kind === "codex" ? codexModel : "") || null,
     });
     created = session.id;
   });
@@ -986,7 +990,7 @@ async function openSettings() {
   section(
     "agents",
     "Agents",
-    "Les modèles donnés aux nouvelles sessions. Celui de Claude Code se choisit aussi au lancement.",
+    "Les modèles donnés aux nouvelles sessions. Ils se choisissent aussi au lancement.",
     row("Claude Code", "", claude.element),
     row("Modèle de Claude Code", "Vide : celui que Claude Code choisit lui-même.", text("claude_model", "ex. opus, sonnet, haiku")),
     row("Codex", "", codex.element),
@@ -2215,12 +2219,33 @@ function renderBar(current: State, project: Project) {
             },
           },
           ...[
-            ["", "Modèle des réglages"],
+            ["", "Claude Code : modèle des réglages"],
             ["opus", "Opus"],
             ["sonnet", "Sonnet"],
             ["haiku", "Haiku"],
           ].map(([value, label]) => h("option", { value, selected: value === model }, label)),
         ),
+        current.tools.codex
+          ? h(
+              "select",
+              {
+                title: "Modèle de la prochaine session Codex",
+                onchange: (event: Event) => {
+                  codexModel = (event.target as HTMLSelectElement).value;
+                  localStorage.setItem("rovibe.codexModel", codexModel);
+                },
+              },
+              h("option", { value: "", selected: codexModel === "" }, "Codex : modèle des réglages"),
+              ...current.codex_models.map((offered) =>
+                h("option", { value: offered.slug, selected: offered.slug === codexModel, title: offered.description }, offered.name),
+              ),
+              // A model Codex no longer lists stays visible rather than
+              // silently replaced: it is still what the next session gets.
+              codexModel && !current.codex_models.some((offered) => offered.slug === codexModel)
+                ? h("option", { value: codexModel, selected: true }, codexModel)
+                : null,
+            )
+          : null,
         h(
           "label",
           { class: "check", title: "Les agents agissent sans demander de confirmation. Un point de sauvegarde est créé avant chaque session lancée ainsi." },

@@ -18,6 +18,7 @@ mod isolation;
 mod jobs;
 mod legacy;
 mod mcp;
+mod models;
 mod projects;
 mod pty;
 mod screenshot;

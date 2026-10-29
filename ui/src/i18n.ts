@@ -133,8 +133,8 @@ const EXACT: Record<string, string> = {
   "Dossier des nouveaux projets": "Folder for new projects",
   "Chemin complet. Vide : Documents\\RoVibe.": "Full path. Empty: Documents\\RoVibe.",
   Agents: "Agents",
-  "Les modèles donnés aux nouvelles sessions. Celui de Claude Code se choisit aussi au lancement.":
-    "The models given to new sessions. Claude Code's can also be chosen when starting one.",
+  "Les modèles donnés aux nouvelles sessions. Ils se choisissent aussi au lancement.":
+    "The models given to new sessions. They can also be chosen when starting one.",
   "Modèle de Claude Code": "Claude Code's model",
   "Vide : celui que Claude Code choisit lui-même.": "Empty: the one Claude Code picks itself.",
   "ex. opus, sonnet, haiku": "e.g. opus, sonnet, haiku",
@@ -328,7 +328,9 @@ const EXACT: Record<string, string> = {
   "codex introuvable dans le PATH": "codex not found in the PATH",
   "Un terminal dans le dossier du projet": "A terminal in the project folder",
   "Modèle de la prochaine session Claude Code": "Model of the next Claude Code session",
-  "Modèle des réglages": "Model from settings",
+  "Claude Code : modèle des réglages": "Claude Code: model from settings",
+  "Modèle de la prochaine session Codex": "Model of the next Codex session",
+  "Codex : modèle des réglages": "Codex: model from settings",
   "Les agents agissent sans demander de confirmation. Un point de sauvegarde est créé avant chaque session lancée ainsi.":
     "Agents act without asking for confirmation. A checkpoint is created before each session started this way.",
   "Sans confirmations": "No confirmations",

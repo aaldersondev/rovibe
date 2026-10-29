@@ -484,6 +484,9 @@ pub struct Saved {
     /// The agent's own folder and branch, kept for when it comes back.
     #[serde(default)]
     pub worktree: Option<pty::Worktree>,
+    /// The model picked at launch; none follows the settings.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Records the agents that are running, so that the next start of the app
@@ -509,6 +512,7 @@ pub fn save_sessions(state: &Shared) {
                 skip_permissions: session.skip_permissions,
                 isolated: session.isolated,
                 worktree: session.worktree.clone(),
+                model: session.model.clone(),
             })
         })
         .collect();
@@ -570,7 +574,7 @@ pub async fn resume(state: &Shared, agent_id: &str) -> Result<pty::SessionInfo, 
         }
         let launch = Launch {
             kind: session.kind,
-            model: None,
+            model: session.model.clone(),
             skip_permissions: session.skip_permissions,
             isolated: session.isolated,
             in_wsl,

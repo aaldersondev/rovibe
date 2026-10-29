@@ -111,6 +111,8 @@ pub struct Session {
     pub skip_permissions: bool,
     pub isolated: bool,
     pub worktree: Option<Worktree>,
+    /// The model chosen when it was started, kept for when it is resumed.
+    pub model: Option<String>,
     /// The agent's own conversation id, needed to resume it later.
     pub agent_id: Mutex<Option<String>>,
     /// Whether the agent ever received a prompt: one that didn't has no
@@ -488,6 +490,10 @@ fn build_command(
                 "mcp_servers.rovibe.url={}",
                 state.session_mcp_url(&project.id, session_id)
             ));
+            // The app's own tools run without a question each: Codex asks
+            // for every call of an MCP tool otherwise, Studio's included.
+            command.arg("-c");
+            command.arg("mcp_servers.rovibe.default_tools_approval_mode=approve");
             if launch.in_wsl {
                 // The distribution is the sandbox, and Codex's own doesn't
                 // start inside it.
@@ -500,11 +506,15 @@ fn build_command(
                 // Codex brings its own sandbox: commands run without asking,
                 // but can only write inside the project.
                 command.args(["--sandbox", "workspace-write"]);
-                if launch.skip_permissions {
-                    command.args(["--ask-for-approval", "never"]);
-                }
+                command.args(["--ask-for-approval", if launch.skip_permissions { "never" } else { "on-request" }]);
             } else if launch.skip_permissions {
                 command.arg("--dangerously-bypass-approvals-and-sandbox");
+            } else {
+                // Commands that stay in the folder run without asking; Codex
+                // asks only to go beyond it. Said outright, because a folder
+                // Codex doesn't trust yet, such as an agent's new branch,
+                // would otherwise get a question for every command.
+                command.args(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]);
             }
             command
         }
@@ -607,6 +617,7 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         skip_permissions: launch.skip_permissions,
         isolated: launch.isolated,
         worktree: launch.worktree.clone(),
+        model: launch.model.clone().filter(|model| !model.trim().is_empty()),
         agent_id: Mutex::new(agent_id),
         used: AtomicBool::new(launch.resume.is_some()),
         touched: Mutex::default(),

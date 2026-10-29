@@ -239,6 +239,7 @@ pub async fn get_state(State(state): State<Shared>) -> Json<Value> {
         "sessions": sessions,
         "studios": studios,
         "tools": { "claude": found.claude, "codex": found.codex, "git": found.git, "sync": found.sync, "node": found.node },
+        "codex_models": crate::models::codex(),
         "plugin_installed": found.plugin,
     }))
 }
