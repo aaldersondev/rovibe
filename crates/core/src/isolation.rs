@@ -375,6 +375,23 @@ pub async fn prepare(state: &Shared, project: &Project) -> Result<(), String> {
     .await
     .map_err(|error| format!("Le projet n'a pas pu être monté dans WSL : {error}"))?;
 
+    // The user's Claude Code skills, read-only: the agent learns from them
+    // but can neither change them nor leave anything behind on Windows.
+    if let Some(skills) = dirs::home_dir().map(|home| home.join(".claude").join("skills")).filter(|dir| dir.is_dir()) {
+        let source = skills.to_string_lossy().replace('\'', r"'\''");
+        let target = "/home/agent/.claude/skills";
+        let mounted = wsl(
+            Some("root"),
+            &format!(
+                "mkdir -p {target} && (mountpoint -q {target} || mount -t drvfs '{source}' {target} -o ro,uid=$(id -u agent),gid=$(id -g agent))"
+            ),
+        )
+        .await;
+        if let Err(error) = mounted {
+            crate::log::warn(format!("Skills non partagées avec l'environnement isolé : {error}"));
+        }
+    }
+
     root_script(&format!("cat > {HOOK_PATH} <<'ROVIBE'\n{HOOK}ROVIBE\nchmod 755 {HOOK_PATH}\n"))
         .await
         .map_err(|error| format!("L'environnement isolé n'a pas pu être préparé : {error}"))?;

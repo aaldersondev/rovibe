@@ -602,6 +602,10 @@ pub fn spawn(state: &Shared, project: &Project, launch: Launch) -> Result<Sessio
         _ => None,
     };
 
+    // What the agent reads first about the app's tools, as of this version.
+    if launch.kind != Kind::Shell {
+        crate::projects::refresh_agent_docs(launch.folder(project));
+    }
     let command = build_command(state, project, &session_id, &launch, agent_id.as_deref())?;
 
     let start_size = *LAST_SIZE.lock().unwrap();

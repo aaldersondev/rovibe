@@ -138,7 +138,8 @@ fn write_template(dir: &Path, name: &str, language: Language) -> std::io::Result
                 .replace("{{name}}", name)
                 .replace("{{package}}", &package_name(name))
                 .replace("{{layout}}", layout)
-                .replace("{{code}}", code),
+                .replace("{{code}}", code)
+                .replace("{{rovibe}}", &rovibe_block()),
         )?;
     }
     Ok(())
@@ -154,11 +155,63 @@ fn write_agent_docs(dir: &Path, name: &str) -> std::io::Result<()> {
                 content
                     .replace("{{name}}", name)
                     .replace("{{layout}}", LAYOUT_IMPORT)
-                    .replace("{{code}}", CODE_LUAU),
+                    .replace("{{code}}", CODE_LUAU)
+                    .replace("{{rovibe}}", &rovibe_block()),
             )?;
         }
     }
     Ok(())
+}
+
+/// The part of a project's `AGENTS.md` that belongs to the app: what its
+/// tools are and how to use them. It changes with the app, and is brought up
+/// to date each time an agent starts; the rest of the file is the user's.
+const ROVIBE_DOCS: &str = include_str!("../templates/AGENTS-rovibe.md");
+const DOCS_START: &str = "<!-- rovibe:début — tenu à jour par l'app, modifie plutôt le reste du fichier -->";
+const DOCS_END: &str = "<!-- rovibe:fin -->";
+/// Where the app's part began before it was marked, in the files written by
+/// earlier versions.
+const OLD_DOCS_HEADING: &str = "## Outils MCP `rovibe`";
+
+fn rovibe_block() -> String {
+    format!("{DOCS_START}\n{ROVIBE_DOCS}{DOCS_END}")
+}
+
+/// `text` with the app's part replaced by today's, or added at the end.
+fn with_current_docs(text: &str) -> String {
+    let block = rovibe_block();
+    if let (Some(start), Some(end)) = (text.find(DOCS_START), text.find(DOCS_END)) {
+        if start < end {
+            return format!("{}{block}{}", &text[..start], &text[end + DOCS_END.len()..]);
+        }
+    }
+    // An earlier version wrote the same part unmarked, from its heading to
+    // the end of the section on checking a change.
+    if let Some(start) = text.find(OLD_DOCS_HEADING) {
+        let checking = text[start..].find("## Vérifier un changement").map_or(start, |at| start + at);
+        let end = text[checking + 2..].find("\n## ").map_or(text.len(), |at| checking + 2 + at + 1);
+        return format!("{}{block}\n{}", &text[..start], &text[end..]);
+    }
+    let separator = if text.is_empty() || text.ends_with("\n\n") { "" } else if text.ends_with('\n') { "\n" } else { "\n\n" };
+    format!("{text}{separator}{block}\n")
+}
+
+/// Brings the instructions of the folder an agent is about to start in up to
+/// date: Codex reads `AGENTS.md`, and Claude Code reads it through the
+/// `CLAUDE.md` that imports it. Files are only written when they change.
+pub fn refresh_agent_docs(folder: &Path) {
+    let docs = folder.join("AGENTS.md");
+    let text = fs::read_to_string(&docs).unwrap_or_default();
+    let current = with_current_docs(&text);
+    if current != text {
+        let _ = fs::write(&docs, current);
+    }
+    let claude = folder.join("CLAUDE.md");
+    let own = fs::read_to_string(&claude).unwrap_or_default();
+    if !own.contains("@AGENTS.md") {
+        let separator = if own.is_empty() || own.ends_with('\n') { "" } else { "\n" };
+        let _ = fs::write(&claude, format!("{own}{separator}@AGENTS.md\n"));
+    }
 }
 
 fn is_empty(dir: &Path) -> bool {
@@ -280,6 +333,80 @@ mod tests {
         assert!(!crate::typescript::is_project(dir.path()));
         let agents = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(agents.contains(".server.luau") && !agents.contains("{{"), "{agents}");
+    }
+
+    #[test]
+    fn the_apps_part_of_the_instructions_follows_the_app_and_spares_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        write_template(dir.path(), "Jeu", Language::Luau).unwrap();
+        let written = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(written.contains(DOCS_START) && written.contains("performance_check"), "{written}");
+
+        // The user's own lines, before and after, survive a refresh of an
+        // outdated part.
+        let outdated = written.replace("performance_check", "ancien_outil") + "
+## Mes règles
+
+Pas de musique.
+";
+        fs::write(dir.path().join("AGENTS.md"), &outdated).unwrap();
+        refresh_agent_docs(dir.path());
+        let refreshed = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(refreshed.contains("performance_check") && !refreshed.contains("ancien_outil"));
+        assert!(refreshed.starts_with("# Jeu") && refreshed.ends_with("Pas de musique.
+"));
+        assert_eq!(refreshed.matches(DOCS_START).count(), 1);
+
+        // Unchanged, it isn't touched again.
+        refresh_agent_docs(dir.path());
+        assert_eq!(fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(), refreshed);
+    }
+
+    #[test]
+    fn instructions_from_before_the_marks_are_taken_over() {
+        let old = "# Jeu
+
+## Règles
+
+- une
+
+## Outils MCP `rovibe`
+
+- `run_luau`
+
+## Vérifier un changement
+
+1. check
+
+## À moi
+
+Garder.
+";
+        let new = with_current_docs(old);
+        assert!(new.starts_with("# Jeu
+
+## Règles
+
+- une
+
+<!-- rovibe:début"), "{new}");
+        assert!(new.ends_with("<!-- rovibe:fin -->
+## À moi
+
+Garder.
+"), "{new}");
+        assert_eq!(new.matches(OLD_DOCS_HEADING).count(), 1);
+    }
+
+    #[test]
+    fn a_folder_without_instructions_gets_them() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "Mes notes").unwrap();
+        refresh_agent_docs(dir.path());
+        assert!(fs::read_to_string(dir.path().join("AGENTS.md")).unwrap().starts_with(DOCS_START));
+        assert_eq!(fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap(), "Mes notes
+@AGENTS.md
+");
     }
 
     #[test]
