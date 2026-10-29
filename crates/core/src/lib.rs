@@ -7,6 +7,7 @@
 mod agents;
 mod api;
 mod assets;
+mod awake;
 mod drive;
 mod git;
 mod guard;
@@ -323,6 +324,7 @@ pub async fn start(port: u16, version: &str) -> anyhow::Result<Handle> {
     agents::load_dormant(&state);
     api::replace_old_plugin(&state);
     forward_to_host(&state);
+    awake::watch(&state);
 
     Ok(Handle {
         state,
