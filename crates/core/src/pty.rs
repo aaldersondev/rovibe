@@ -401,6 +401,36 @@ fn write_codex_hooks(folder: &Path) {
     let _ = write_json(&path, &json!({ "hooks": hooks }));
 }
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Who the session's commits are by. Git refuses to commit without a name,
+/// and a machine where it was never set up has none: agents then sign as
+/// themselves, like the app's own snapshots. An identity the user set wins;
+/// inside the distribution, where git has none of its own, it is carried in.
+fn git_identity(launch: &Launch, folder: &Path) -> Vec<(&'static str, String)> {
+    let read = |key: &str| {
+        let mut command = std::process::Command::new("git");
+        command.arg("-C").arg(folder).args(["config", "--get", key]);
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
+        let output = command.output().ok()?;
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (!value.is_empty()).then_some(value)
+    };
+    let (name, email) = match (read("user.name"), read("user.email")) {
+        (Some(_), Some(_)) if !launch.in_wsl => return Vec::new(),
+        (Some(name), Some(email)) => (name, email),
+        _ => (format!("{} (RoVibe)", launch.kind.label()), "rovibe@localhost".to_owned()),
+    };
+    vec![
+        ("GIT_AUTHOR_NAME", name.clone()),
+        ("GIT_COMMITTER_NAME", name),
+        ("GIT_AUTHOR_EMAIL", email.clone()),
+        ("GIT_COMMITTER_EMAIL", email),
+    ]
+}
+
 fn build_command(
     state: &Shared,
     project: &Project,
@@ -411,6 +441,7 @@ fn build_command(
     let locate = |name: &str| {
         which::which(name).map_err(|_| format!("`{name}` est introuvable dans le PATH"))
     };
+    let identity = git_identity(launch, launch.folder(project));
 
     let mut command = match launch.kind {
         Kind::Claude => {
@@ -423,6 +454,7 @@ fn build_command(
                 command.args(["--", "env"]);
                 command.args(COLOR_ENV.map(|(name, value)| format!("{name}={value}")));
                 command.args(isolation::proxy_env(state));
+                command.args(identity.iter().map(|(name, value)| format!("{name}={value}")));
                 command.arg(isolation::CLAUDE);
                 command
             } else {
@@ -458,6 +490,7 @@ fn build_command(
                 command.args(["--", "env"]);
                 command.args(COLOR_ENV.map(|(name, value)| format!("{name}={value}")));
                 command.args(isolation::proxy_env(state));
+                command.args(identity.iter().map(|(name, value)| format!("{name}={value}")));
                 command.arg(format!("ROVIBE_HOOK={hook}"));
                 command.arg(isolation::CODEX);
                 command
@@ -545,6 +578,9 @@ fn build_command(
     // agent, and a Windows working directory would only leak a path.
     if !launch.in_wsl {
         command.cwd(launch.folder(project));
+        for (name, value) in &identity {
+            command.env(name, value);
+        }
     }
     command.env("ROVIBE_PROJECT", &project.name);
     Ok(command)
